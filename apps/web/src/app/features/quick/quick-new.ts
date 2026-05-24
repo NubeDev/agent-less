@@ -176,13 +176,22 @@ export class QuickNewPage implements OnInit {
       }
       const stored = this.projectCtx.projectId();
       this.projectId = projects.find(p => p.id === stored)?.id ?? projects[0].id;
+    } catch {
+      this.loadError.set('Could not load projects.');
+      return;
+    }
 
-      const playbooks = await firstValueFrom(this.playbooksApi.list());
+    // Playbooks are optional — the API endpoint is `/v1/projects/{id}/playbooks`
+    // and a missing/failing call should not block job creation. The server
+    // applies the project's default playbook when `playbook_id` is omitted.
+    try {
+      const playbooks = await firstValueFrom(this.playbooksApi.listForProject(this.projectId));
       this.playbooks.set(playbooks);
       const standard = playbooks.find(pb => pb.title.toLowerCase().includes('standard'));
       this.playbookId = standard?.id ?? playbooks[0]?.id ?? '';
     } catch {
-      this.loadError.set('Could not load projects or playbooks.');
+      this.playbooks.set([]);
+      this.playbookId = '';
     }
   }
 

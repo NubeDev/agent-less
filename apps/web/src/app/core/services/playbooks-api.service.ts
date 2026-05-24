@@ -73,6 +73,15 @@ export class PlaybooksApiService extends BaseApiService {
     return this.http.get<SpPlaybook[]>(`${this.baseUrl}/playbooks`);
   }
 
+  /**
+   * Scoped variant — the server only exposes
+   * `GET /v1/projects/{project_id}/playbooks` for now; the flat `list()`
+   * above hits a 404. Prefer this when a project id is known.
+   */
+  listForProject(projectId: string): Observable<SpPlaybook[]> {
+    return this.http.get<SpPlaybook[]>(`${this.baseUrl}/projects/${projectId}/playbooks`);
+  }
+
   get(id: string): Observable<SpPlaybook> {
     return this.http.get<SpPlaybook>(`${this.baseUrl}/playbooks/${id}`);
   }
