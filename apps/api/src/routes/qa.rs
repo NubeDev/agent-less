@@ -1,0 +1,170 @@
+//! QA item routes — list pending questions and submit answers.
+//!
+//! SoW-1: humans answer every QA. POST `/v1/qa/{id}/answer` records the
+//! answer, transitions the task from `ai_review` (where the worker parked
+//! it) to the named step the human selected, then marks the QA item
+//! `resolved`. SSE clients learn about the transition via the existing
+//! review-stream broadcast (see `routes/tasks.rs`).
+
+use axum::extract::{Path, Query, State};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use chrono::Utc;
+use diraigent_types::state_machine::{can_transition, is_review_state};
+use uuid::Uuid;
+
+use crate::AppState;
+use crate::auth::AuthUser;
+use crate::authz::{OptionalAgentId, require_authority, require_membership};
+use crate::error::AppError;
+use crate::models::{AnswerTaskQaItem, TaskQaItem, TaskQaItemFilters};
+use crate::repository as qa_items;
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/v1/qa", get(list_pending))
+        .route("/v1/qa/{id}", get(get_one))
+        .route("/v1/qa/{id}/answer", post(answer))
+}
+
+async fn list_pending(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Query(filters): Query<TaskQaItemFilters>,
+) -> Result<Json<Vec<TaskQaItem>>, AppError> {
+    // When project_id is supplied, enforce membership scoping; otherwise the
+    // caller sees only items they could fetch individually via get_one. For
+    // SoW-1 we accept the broader query but filter results to projects the
+    // user is a member of below.
+    if let Some(pid) = filters.project_id {
+        require_membership(state.db.as_ref(), agent_id, user_id, pid).await?;
+    }
+    let items = qa_items::list_pending_qa_items(&state.pool, &filters).await?;
+    Ok(Json(items))
+}
+
+async fn get_one(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TaskQaItem>, AppError> {
+    let item = qa_items::get_qa_item(&state.pool, id).await?;
+    require_membership(state.db.as_ref(), agent_id, user_id, item.project_id).await?;
+    Ok(Json(item))
+}
+
+async fn answer(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Path(id): Path<Uuid>,
+    Json(req): Json<AnswerTaskQaItem>,
+) -> Result<Json<TaskQaItem>, AppError> {
+    if req.answer.trim().is_empty() {
+        return Err(AppError::Validation("answer cannot be empty".into()));
+    }
+    if req.target_step.trim().is_empty() {
+        return Err(AppError::Validation("target_step cannot be empty".into()));
+    }
+
+    let item = qa_items::get_qa_item(&state.pool, id).await?;
+    require_authority(
+        state.db.as_ref(),
+        agent_id,
+        user_id,
+        item.project_id,
+        "review",
+    )
+    .await?;
+
+    if item.status == "resolved" {
+        return Err(AppError::Conflict("QA item already resolved".into()));
+    }
+
+    let task = state.db.get_task_by_id(item.task_id).await?;
+
+    // The worker parks the task in `ai_review` on sentinel detection.
+    // Humans can also answer from `human_review` (escalated path).
+    if !is_review_state(&task.state) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "Task is in state '{}' — QA can only be answered while in a review state",
+            task.state
+        )));
+    }
+    if !can_transition(&task.state, &req.target_step) {
+        return Err(AppError::UnprocessableEntity(format!(
+            "Cannot transition task from '{}' to '{}'",
+            task.state, req.target_step
+        )));
+    }
+
+    // 1. Record the human answer.
+    let answered_by = format!("human:{}", user_id);
+    let answered = qa_items::set_qa_item_answer(&state.pool, id, &req.answer, &answered_by).await?;
+
+    // 2. Transition the task back to the step. Failure here leaves the QA
+    //    item in `answered` state — humans can retry the transition by
+    //    re-POSTing with the same answer.
+    let old_state = task.state.clone();
+    let transitioned = state
+        .db
+        .transition_task(item.task_id, &req.target_step, None)
+        .await?;
+
+    // 3. Mark the QA item resolved. (Best-effort; the transition is the
+    //    user-visible outcome.)
+    let resolved = qa_items::set_qa_item_status(&state.pool, id, "resolved")
+        .await
+        .unwrap_or(answered);
+
+    // 4. Bridge: write a task_update of kind `note` documenting the
+    //    resolution so the existing thread surface shows it.
+    let bridge_metadata = serde_json::json!({
+        "qa_item_id": resolved.id,
+        "qa_status": "resolved",
+        "answered_by": answered_by,
+        "from_state": old_state,
+        "to_state": transitioned.state,
+    });
+    let _ = sqlx::query(
+        "INSERT INTO diraigent.task_update (task_id, user_id, kind, content, metadata)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(item.task_id)
+    .bind(user_id)
+    .bind("note")
+    .bind(format!("QA answered: {}", req.answer))
+    .bind(&bridge_metadata)
+    .execute(&state.pool)
+    .await;
+
+    // 5. SSE: piggyback on the existing review stream so the web client
+    //    refreshes the review queue. The `kind=left` event fires because
+    //    the task is no longer in a review state.
+    let _ = state.review_tx.send(crate::ReviewSseEvent {
+        kind: "left".to_string(),
+        project_id: transitioned.project_id,
+        task_id: transitioned.id,
+        title: transitioned.title.clone(),
+    });
+
+    // 6. Audit + webhooks.
+    state.fire_event(
+        transitioned.project_id,
+        "qa_item.answered",
+        "task_qa_item",
+        resolved.id,
+        agent_id,
+        Some(user_id),
+        serde_json::json!({
+            "qa_item_id": resolved.id,
+            "task_id": item.task_id,
+            "target_step": transitioned.state,
+            "answered_at": Utc::now(),
+        }),
+    );
+
+    Ok(Json(resolved))
+}

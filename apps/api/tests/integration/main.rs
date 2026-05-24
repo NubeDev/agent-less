@@ -8,6 +8,7 @@ mod observations;
 mod packages;
 mod playbook;
 mod projects;
+mod qa;
 mod scoring;
 mod step_templates;
 mod task_crud;

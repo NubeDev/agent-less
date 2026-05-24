@@ -26,6 +26,7 @@ mod packages;
 mod playbooks;
 mod projects;
 mod provider_configs;
+mod qa;
 mod reports;
 mod roles;
 mod search;
@@ -118,5 +119,6 @@ pub fn router() -> Router<AppState> {
         .merge(dashboard::routes())
         .merge(authentik_webhooks::routes())
         .merge(orchestra_sync::routes())
+        .merge(qa::routes())
         .merge(ws::routes())
 }
