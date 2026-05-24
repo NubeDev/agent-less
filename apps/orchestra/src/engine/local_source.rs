@@ -369,6 +369,11 @@ impl TaskSource for LocalTaskSource {
         }))
     }
 
+    async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
+        // Local mode has no persistent QA store / no sweeper.
+        Ok(Vec::new())
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let tasks = self.tasks.lock().unwrap();
         Ok(tasks

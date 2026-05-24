@@ -265,6 +265,16 @@ impl ProjectsApi {
         .await
     }
 
+    /// SoW-2 timeout sweeper: ask the API to escalate every pending
+    /// AI-targeted QA item whose `expires_at` has passed. Returns the
+    /// list of items the API actually transitioned.
+    pub async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
+        let v = self
+            .post("/qa/sweep-expired", &serde_json::json!({}))
+            .await?;
+        Ok(as_array(&v))
+    }
+
     pub async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let val = self.get(&format!("/tasks/{task_id}/updates")).await?;
         Ok(as_array(&val))
@@ -748,6 +758,9 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         target_step: &str,
     ) -> Result<Value> {
         ProjectsApi::answer_qa_item(self, qa_item_id, answer, target_step).await
+    }
+    async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
+        ProjectsApi::sweep_expired_qa(self).await
     }
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         ProjectsApi::get_task_updates(self, task_id).await

@@ -278,6 +278,10 @@ impl TaskSource for OrchestraTaskSource {
             .await
     }
 
+    async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
+        self.api.sweep_expired_qa().await
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         db::task_updates::list_for_task(&self.db, task_id)
     }

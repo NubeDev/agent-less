@@ -219,6 +219,36 @@ async fn main() -> Result<()> {
         .await;
     }
 
+    // SoW-2: AI-QA timeout sweeper. Polls every 30s and asks the API
+    // to escalate any pending AI-targeted QA item whose `expires_at`
+    // has elapsed. Human QA items are left alone — a human must answer
+    // them. The endpoint is idempotent so multiple agents calling it
+    // concurrently won't double-escalate.
+    {
+        let sweep_api = api.clone();
+        let sweep_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                if sweep_shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                    info!("qa sweeper: shutdown signalled");
+                    break;
+                }
+                match sweep_api.sweep_expired_qa().await {
+                    Ok(items) if !items.is_empty() => {
+                        info!("qa sweeper: escalated {} expired AI QA(s)", items.len());
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("qa sweeper: API call failed: {e:#}");
+                    }
+                }
+            }
+        });
+    }
+
     // Main polling loop
     let mut last_poll = std::time::Instant::now();
     let mut last_heartbeat = std::time::Instant::now();

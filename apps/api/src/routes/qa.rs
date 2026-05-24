@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/qa", get(list_pending).post(create))
         .route("/v1/qa/{id}", get(get_one))
         .route("/v1/qa/{id}/answer", post(answer))
+        .route("/v1/qa/sweep-expired", post(sweep_expired))
 }
 
 async fn create(
@@ -235,4 +236,102 @@ async fn answer(
     );
 
     Ok(Json(resolved))
+}
+
+/// SoW-2 timeout sweeper endpoint.
+///
+/// Called periodically by the orchestra worker. For every pending
+/// AI-targeted QA item whose `expires_at` has elapsed:
+///
+/// 1. Mark the QA `escalated`.
+/// 2. If the task is still in `ai_review`, transition it to
+///    `human_review`.
+/// 3. Write a `note` task_update with reason `ai_timeout` so the human
+///    reviewer sees why the item ended up on their queue.
+///
+/// Idempotent: once a row is `escalated` the UPDATE no longer matches it.
+/// Returns the list of escalated QA items.
+async fn sweep_expired(
+    State(state): State<AppState>,
+    AuthUser(_user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+) -> Result<Json<Vec<TaskQaItem>>, AppError> {
+    let escalated = qa_items::escalate_expired_ai_qa(&state.pool).await?;
+
+    for item in &escalated {
+        // Best-effort task transition. Only force the task into
+        // human_review when it is still parked in ai_review — if a human
+        // already grabbed it (or it transitioned elsewhere) we leave it alone.
+        let task = match state.db.get_task_by_id(item.task_id).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    qa_id = %item.id,
+                    error = %e,
+                    "sweep_expired: failed to fetch task for escalation"
+                );
+                continue;
+            }
+        };
+        if task.state == "ai_review" {
+            if let Err(e) = state
+                .db
+                .transition_task(item.task_id, "human_review", None)
+                .await
+            {
+                tracing::warn!(
+                    qa_id = %item.id,
+                    task_id = %item.task_id,
+                    error = %e,
+                    "sweep_expired: transition ai_review -> human_review failed"
+                );
+            } else {
+                // SSE: nudge the review queue so the human surface picks it up.
+                let _ = state.review_tx.send(crate::ReviewSseEvent {
+                    kind: "entered".to_string(),
+                    state: Some("human_review".to_string()),
+                    project_id: task.project_id,
+                    task_id: task.id,
+                    title: task.title.clone(),
+                });
+            }
+        }
+
+        let bridge_metadata = serde_json::json!({
+            "qa_item_id": item.id,
+            "qa_status": "escalated",
+            "reason": "ai_timeout",
+            "step_name": item.step_name,
+        });
+        let _ = sqlx::query(
+            "INSERT INTO diraigent.task_update (task_id, agent_id, kind, content, metadata)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(item.task_id)
+        .bind(agent_id)
+        .bind("note")
+        .bind(format!(
+            "AI responder timed out on QA {} — escalated to human_review",
+            item.id
+        ))
+        .bind(&bridge_metadata)
+        .execute(&state.pool)
+        .await;
+
+        state.fire_event(
+            item.project_id,
+            "qa_item.escalated",
+            "task_qa_item",
+            item.id,
+            agent_id,
+            None,
+            serde_json::json!({
+                "qa_item_id": item.id,
+                "task_id": item.task_id,
+                "reason": "ai_timeout",
+            }),
+        );
+    }
+
+    Ok(Json(escalated))
 }

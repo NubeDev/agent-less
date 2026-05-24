@@ -69,6 +69,12 @@ pub trait TaskSource: Send + Sync {
         answer: &str,
         target_step: &str,
     ) -> Result<Value>;
+    /// SoW-2 timeout sweeper: ask the upstream to escalate every
+    /// pending AI-targeted QA item whose `expires_at` has elapsed.
+    /// Returns the list of items that were transitioned (may be
+    /// empty). Implementations that do not persist QA items
+    /// server-side should return an empty Vec.
+    async fn sweep_expired_qa(&self) -> Result<Vec<Value>>;
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn get_task_comments(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn post_comment(&self, task_id: &str, content: &str) -> Result<Value>;

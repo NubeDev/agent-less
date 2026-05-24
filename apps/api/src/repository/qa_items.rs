@@ -140,3 +140,25 @@ pub async fn set_qa_item_status(
     .await?;
     Ok(row)
 }
+
+/// SoW-2 timeout sweeper: select every pending, AI-targeted QA item
+/// whose `expires_at` has elapsed and mark it `escalated`.
+///
+/// Returns the rows that were transitioned so the caller can fan out
+/// the matching task transitions (ai_review -> human_review) and write
+/// audit `task_update`s. Human-targeted items are NEVER selected — a
+/// human must always answer their own QAs.
+pub async fn escalate_expired_ai_qa(pool: &PgPool) -> Result<Vec<TaskQaItem>, AppError> {
+    let rows = sqlx::query_as::<_, TaskQaItem>(
+        "UPDATE diraigent.task_qa_item
+         SET status = 'escalated'
+         WHERE status = 'pending'
+           AND responder = 'ai'
+           AND expires_at IS NOT NULL
+           AND expires_at < now()
+         RETURNING *",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}

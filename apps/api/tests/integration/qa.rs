@@ -144,6 +144,123 @@ async fn qa_answer_rejects_invalid_transition() {
     app.cleanup().await;
 }
 
+/// SoW-2 BLOCK F: the sweeper escalates pending AI-targeted QA items
+/// whose `expires_at` has elapsed, transitions the task from
+/// `ai_review` to `human_review`, and ignores human-targeted items.
+#[tokio::test]
+async fn qa_sweep_escalates_expired_ai_items() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-sweep").await;
+    let agent_id = app.create_agent("worker-sweep").await;
+
+    // Drive a task to ai_review.
+    let task = app.create_task(project_id, "Will time out").await;
+    let task_id = task["id"].as_str().unwrap();
+    app.send(post_json(
+        &format!("/v1/tasks/{task_id}/transition"),
+        json!({ "state": "ready" }),
+    ))
+    .await;
+    app.send(post_json(
+        &format!("/v1/tasks/{task_id}/claim"),
+        json!({ "agent_id": agent_id }),
+    ))
+    .await;
+    app.send(post_json(
+        &format!("/v1/tasks/{task_id}/transition"),
+        json!({ "state": "ai_review" }),
+    ))
+    .await;
+
+    let task_uuid: uuid::Uuid = task_id.parse().unwrap();
+
+    // (1) Expired AI item — sweeper should escalate.
+    let expired_ai: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder, expires_at)
+         VALUES ($1, $2, 'implement', 'question', 'a?', 'ai', now() - interval '5 seconds')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // (2) Future AI item — sweeper must not touch.
+    let future_ai: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder, expires_at)
+         VALUES ($1, $2, 'implement', 'question', 'b?', 'ai', now() + interval '5 minutes')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // (3) Expired *human* item — sweeper must never auto-cancel human QAs.
+    let expired_human: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder, expires_at)
+         VALUES ($1, $2, 'implement', 'question', 'c?', 'human', now() - interval '5 seconds')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // Invoke the sweeper.
+    let r = app.send(post_json("/v1/qa/sweep-expired", json!({}))).await;
+    assert_eq!(r.status, StatusCode::OK, "sweep: {}", r.json);
+    let escalated = r.json.as_array().expect("array");
+    let escalated_ids: Vec<String> = escalated
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        escalated_ids.contains(&expired_ai.to_string()),
+        "expected {expired_ai} in {escalated_ids:?}"
+    );
+    assert!(
+        !escalated_ids.contains(&future_ai.to_string()),
+        "future_ai must not be escalated yet"
+    );
+    assert!(
+        !escalated_ids.contains(&expired_human.to_string()),
+        "expired_human must never be auto-escalated"
+    );
+
+    // Expired AI item is now `escalated`; future AI is still pending;
+    // human is still pending.
+    for (id, expected_status) in [
+        (expired_ai, "escalated"),
+        (future_ai, "pending"),
+        (expired_human, "pending"),
+    ] {
+        let row: (String,) =
+            sqlx::query_as("SELECT status FROM diraigent.task_qa_item WHERE id = $1")
+                .bind(id)
+                .fetch_one(&app.pool)
+                .await
+                .unwrap();
+        assert_eq!(row.0, expected_status, "{id} status");
+    }
+
+    // Task should have moved from ai_review to human_review.
+    let r = app.send(get(&format!("/v1/tasks/{task_id}"))).await;
+    assert_eq!(r.json["state"].as_str().unwrap(), "human_review");
+
+    // Idempotency: second sweep returns no fresh escalations.
+    let r = app.send(post_json("/v1/qa/sweep-expired", json!({}))).await;
+    assert_eq!(r.json.as_array().unwrap().len(), 0);
+
+    app.cleanup().await;
+}
+
 /// SoW-3: the `handover` kind must be accepted by the
 /// `task_update_kind_check` CHECK constraint added in migration 048.
 /// This test exists primarily as a smoke check that the migration ran
