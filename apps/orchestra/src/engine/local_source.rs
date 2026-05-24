@@ -348,6 +348,21 @@ impl TaskSource for LocalTaskSource {
         Ok(item)
     }
 
+    async fn answer_qa_item(
+        &self,
+        qa_item_id: &str,
+        answer: &str,
+        target_step: &str,
+    ) -> Result<Value> {
+        tracing::info!("local: QA[{qa_item_id}] -> {target_step} answer={answer}");
+        Ok(json!({
+            "id": qa_item_id,
+            "answer": answer,
+            "target_step": target_step,
+            "status": "answered",
+        }))
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let tasks = self.tasks.lock().unwrap();
         Ok(tasks

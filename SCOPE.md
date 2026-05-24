@@ -261,3 +261,51 @@ producing a diff.
   accept-check empirically.
 - No regression in existing playbooks (those without a `qa:` block
   continue to use `human_review` exclusively).
+
+---
+
+## Known gaps / future work (not in this programme)
+
+Captured here so they don't get lost. Triage when convenient; none block
+SoW-2.
+
+### Architectural debt
+
+1. **Playbook DB → YAML (commit 5c7a4d2, April 9 2026).** ~700 lines of
+   DB-backed playbook infrastructure deleted in favour of
+   `.diraigent/playbooks/*.yaml`. Operator-UX regression (no UI editing
+   without a git commit). Worth revisiting as "hybrid: YAML defaults +
+   DB overrides table" — model after GitHub Actions repo settings.
+2. **`POST /v1` creates a project, not `POST /v1/projects`.** Surprising
+   to every new user. Add `/v1/projects`, deprecate root path.
+3. **`memberships.rs` `ON CONFLICT` 500 bug** flagged in
+   NEW-TASK.md troubleshooting. Verify still real; fix or remove the note.
+4. **Stale state-machine vocabulary** (`draft`/`in_progress`/`blocked`)
+   probably still lingers in comments, UI strings, or older migrations.
+   20-min `grep -ri 'in_progress\|draft' apps/` audit + sweep.
+5. **Port duplication.** Compose stack uses 4200/8082/5433; `make start`
+   uses 4280/3100/5488. Fine if intentional; document the why or unify.
+6. **License: SSPL.** Contributor/fork friction. Not urgent.
+
+### Behavioural gaps the AI-responder loop creates
+
+7. **Weak models may never use the sentinel.** Plan to monitor
+   "tasks failed silently" vs "tasks asked a QA" ratio after launch;
+   if QA rate is ~0, the system prompt isn't working.
+8. **No rate-limit on QA emissions.** A confused agent could emit dozens
+   of sentinels in one log. Add max-per-step cap (e.g. 3) in the parser
+   with a WARN if exceeded.
+9. **QA item lifecycle on task cancellation.** If a task is cancelled
+   while a human QA is pending, cascade `qa_item.status = resolved
+   (task_cancelled)`. Add to SoW-2 or as a follow-up.
+
+### Operator gaps
+
+10. **Forensics.** QA item should store `sentinel_raw` (the matched
+    block as the agent emitted it) for debugging "why did this fire?".
+11. **QA velocity metrics.** Average human answer time, AI confidence
+    distribution, accept rate. Needs SoW-4 telemetry + a dashboard query.
+12. **Surprise billing risk.** SoW-2's re-run re-pays the full step
+    budget (no provider session resume exists). Document this in the
+    user-facing playbook docs so people aren't surprised by the cost
+    of `second_pass` on a budget-heavy step.

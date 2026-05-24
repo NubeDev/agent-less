@@ -52,6 +52,15 @@ pub trait TaskSource: Send + Sync {
         prompt: &str,
         options: Option<&[String]>,
     ) -> Result<Value>;
+    /// SoW-2: post an AI-produced answer for a QA item. The API
+    /// validates the implied state transition, records the answer, and
+    /// transitions the task back to `target_step`.
+    async fn answer_qa_item(
+        &self,
+        qa_item_id: &str,
+        answer: &str,
+        target_step: &str,
+    ) -> Result<Value>;
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn get_task_comments(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn post_comment(&self, task_id: &str, content: &str) -> Result<Value>;

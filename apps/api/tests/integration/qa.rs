@@ -166,13 +166,12 @@ async fn task_update_accepts_handover_kind() {
     .await
     .expect("insert handover row");
 
-    let row: (String, String) = sqlx::query_as(
-        "SELECT kind, content FROM diraigent.task_update WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_one(&app.pool)
-    .await
-    .expect("read back");
+    let row: (String, String) =
+        sqlx::query_as("SELECT kind, content FROM diraigent.task_update WHERE id = $1")
+            .bind(id)
+            .fetch_one(&app.pool)
+            .await
+            .expect("read back");
     assert_eq!(row.0, "handover");
     assert!(row.1.contains("shipped foo"));
 

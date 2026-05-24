@@ -257,6 +257,17 @@ impl TaskSource for OrchestraTaskSource {
             .await
     }
 
+    async fn answer_qa_item(
+        &self,
+        qa_item_id: &str,
+        answer: &str,
+        target_step: &str,
+    ) -> Result<Value> {
+        self.api
+            .answer_qa_item(qa_item_id, answer, target_step)
+            .await
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         db::task_updates::list_for_task(&self.db, task_id)
     }

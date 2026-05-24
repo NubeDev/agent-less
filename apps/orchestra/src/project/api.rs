@@ -236,6 +236,28 @@ impl ProjectsApi {
         self.post("/qa", &body).await
     }
 
+    /// SoW-2: post an AI-produced answer for a QA item. The API validates
+    /// the implied state transition (review-state -> `target_step`),
+    /// records the answer + responder, and transitions the task back.
+    /// Caller must also include `responder: "ai"` distinction via the
+    /// `metadata` field on the QA row (set at creation time when the
+    /// step's `qa.responder == ai`).
+    pub async fn answer_qa_item(
+        &self,
+        qa_item_id: &str,
+        answer: &str,
+        target_step: &str,
+    ) -> Result<Value> {
+        self.post(
+            &format!("/qa/{qa_item_id}/answer"),
+            &serde_json::json!({
+                "answer": answer,
+                "target_step": target_step,
+            }),
+        )
+        .await
+    }
+
     pub async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let val = self.get(&format!("/tasks/{task_id}/updates")).await?;
         Ok(as_array(&val))
@@ -699,6 +721,14 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         options: Option<&[String]>,
     ) -> Result<Value> {
         ProjectsApi::post_qa_item(self, task_id, project_id, step_name, prompt, options).await
+    }
+    async fn answer_qa_item(
+        &self,
+        qa_item_id: &str,
+        answer: &str,
+        target_step: &str,
+    ) -> Result<Value> {
+        ProjectsApi::answer_qa_item(self, qa_item_id, answer, target_step).await
     }
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         ProjectsApi::get_task_updates(self, task_id).await
