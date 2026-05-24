@@ -247,9 +247,11 @@ import {
               <h2 class="text-sm font-semibold text-text-primary mb-3">Knowledge touched</h2>
               @if (touchedKnowledge().length === 0) {
                 <p class="text-xs text-text-secondary">
-                  Best-effort — backend has no per-task knowledge filter yet.
-                  Listing all project knowledge below; tag with
-                  <code class="font-mono">metadata.touched_by_task_id</code> to scope.
+                  No knowledge entries were created or modified by this
+                  task. Agents stamp
+                  <code class="font-mono">metadata.task_id</code> on every
+                  <code class="font-mono">agent-cli knowledge</code> post,
+                  so this list is precise.
                 </p>
               } @else {
                 <ul class="space-y-1 text-sm">
@@ -379,7 +381,14 @@ export class AdvancedDetailPage implements OnInit, OnDestroy {
     }
     if (this.knowledge().length === 0) {
       try {
-        const ks = await firstValueFrom(this.knowledgeApi.list());
+        // Gap #4 (closed): worker stamps `metadata.task_id` on every
+        // knowledge / observation / decision agent-cli post. Combined
+        // with gap #1's `task_id` query param on the list endpoint,
+        // the API now returns precisely the entries this task touched
+        // — no client-side filter needed.
+        const ks = await firstValueFrom(
+          this.knowledgeApi.list(undefined, undefined, this.taskId),
+        );
         this.knowledge.set(ks);
       } catch {
         /* best-effort */
@@ -477,13 +486,10 @@ export class AdvancedDetailPage implements OnInit, OnDestroy {
   });
 
   readonly touchedKnowledge = computed<SpKnowledge[]>(() => {
-    // Backend has no per-task filter yet (see SCOPE.md Known Gaps).
-    // Honour metadata.touched_by_task_id if anyone has tagged it.
-    const id = this.taskId;
-    return this.knowledge().filter(k => {
-      const tag = (k.metadata as Record<string, unknown>)?.['touched_by_task_id'];
-      return tag === id;
-    });
+    // The /knowledge?task_id= endpoint already returns task-scoped
+    // entries server-side (gap #1 + gap #4). Return as-is; no client
+    // filter needed.
+    return this.knowledge();
   });
 
   readonly taskReports = computed(() => this.reports().filter(r => r.task_id === this.taskId));

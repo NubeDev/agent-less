@@ -270,10 +270,11 @@ everything UI-4 lets you configure.
     resolved_followup`) per SoW-4.
 - [x] **Handover chain**: every step's handover block, in order, with
   copy-to-clipboard.
-- [ ] **Knowledge touched**: list of knowledge entries the run read,
+- [x] **Knowledge touched**: list of knowledge entries the run read,
   created, or modified. Click → opens entry in `/knowledge`.
-  (Deferred — see `Known Gaps`: knowledge-touched provenance not yet
-  emitted by worker.)
+  Server-side scoped via `/v1/knowledge?task_id=<id>` (gap #1 +
+  gap #4 stamp `metadata.task_id` on every agent-cli knowledge /
+  observation / decision post).
 - [x] **Verifications**: pass/fail per gate, output snippet on fail.
 - [x] **Reports**: links to generated reports.
 - [x] **Playbook used**: collapsible YAML view (read-only) showing
