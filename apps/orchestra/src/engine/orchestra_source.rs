@@ -282,6 +282,16 @@ impl TaskSource for OrchestraTaskSource {
         self.api.sweep_expired_qa().await
     }
 
+    async fn latest_answered_qa_for_step(
+        &self,
+        task_id: &str,
+        step_name: &str,
+    ) -> Result<Option<Value>> {
+        self.api
+            .latest_answered_qa_for_step(task_id, step_name)
+            .await
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         db::task_updates::list_for_task(&self.db, task_id)
     }

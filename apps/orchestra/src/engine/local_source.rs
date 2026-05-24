@@ -374,6 +374,15 @@ impl TaskSource for LocalTaskSource {
         Ok(Vec::new())
     }
 
+    async fn latest_answered_qa_for_step(
+        &self,
+        _task_id: &str,
+        _step_name: &str,
+    ) -> Result<Option<Value>> {
+        // Local mode does not persist QA answers across worker invocations.
+        Ok(None)
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let tasks = self.tasks.lock().unwrap();
         Ok(tasks

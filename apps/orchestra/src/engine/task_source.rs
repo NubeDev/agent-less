@@ -75,6 +75,15 @@ pub trait TaskSource: Send + Sync {
     /// empty). Implementations that do not persist QA items
     /// server-side should return an empty Vec.
     async fn sweep_expired_qa(&self) -> Result<Vec<Value>>;
+    /// SoW-2: return the most recently answered QA item for the given
+    /// task whose `step_name` matches, or `Ok(None)` if there is none.
+    /// Used by the worker to fold a freshly-resolved `qa_answer` into
+    /// the next provider invocation's `previous_step`.
+    async fn latest_answered_qa_for_step(
+        &self,
+        task_id: &str,
+        step_name: &str,
+    ) -> Result<Option<Value>>;
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn get_task_comments(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn post_comment(&self, task_id: &str, content: &str) -> Result<Value>;

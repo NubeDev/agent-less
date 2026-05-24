@@ -275,6 +275,16 @@ impl ProjectsApi {
         Ok(as_array(&v))
     }
 
+    /// SoW-2: list QA items for a task filtered by status. The API
+    /// already supports `GET /v1/qa?status=…&task_id=…`, so the
+    /// orchestra side just narrows the response client-side.
+    pub async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>> {
+        let v = self
+            .get(&format!("/qa?status={status}&task_id={task_id}"))
+            .await?;
+        Ok(as_array(&v))
+    }
+
     pub async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let val = self.get(&format!("/tasks/{task_id}/updates")).await?;
         Ok(as_array(&val))
@@ -761,6 +771,34 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
     }
     async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
         ProjectsApi::sweep_expired_qa(self).await
+    }
+    async fn latest_answered_qa_for_step(
+        &self,
+        task_id: &str,
+        step_name: &str,
+    ) -> Result<Option<Value>> {
+        // Query resolved QAs for this task and pick the most recent one
+        // matching the requested step. We rely on `answered_at` for the
+        // ordering since the API returns rows sorted ascending by
+        // created_at.
+        let items = ProjectsApi::list_qa_items_for_task(self, task_id, "resolved").await?;
+        let mut matching: Vec<Value> = items
+            .into_iter()
+            .filter(|v| v.get("step_name").and_then(|s| s.as_str()) == Some(step_name))
+            .collect();
+        // Sort descending by answered_at (RFC3339 strings sort lex-correctly).
+        matching.sort_by(|a, b| {
+            let ka = a
+                .get("answered_at")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default();
+            let kb = b
+                .get("answered_at")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default();
+            kb.cmp(ka)
+        });
+        Ok(matching.into_iter().next())
     }
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         ProjectsApi::get_task_updates(self, task_id).await

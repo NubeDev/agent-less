@@ -919,12 +919,53 @@ async fn execute_via_provider(
         settings: step_config.settings.clone(),
     };
 
-    // 5. Build task context for the provider
+    // 5. Build task context for the provider.
+    //
+    // SoW-2: when a previous run of this step parked the task in
+    // `*_review` and a QA answer resolved it (either via the AI
+    // responder loop or a human), the resumed run should *see* that
+    // answer rather than re-ask. We fetch the latest resolved QA for
+    // this (task, step) and tuck it into `previous_step.qa_answer`.
+    let qa_answer = match api
+        .latest_answered_qa_for_step(task_id, &step_config.step_name)
+        .await
+    {
+        Ok(Some(item)) => {
+            let answer = item
+                .get("answer")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if answer.is_empty() {
+                None
+            } else {
+                Some(answer)
+            }
+        }
+        Ok(None) => None,
+        Err(e) => {
+            warn!(
+                "worker {tid}: failed to fetch latest answered QA for step '{}': {e}",
+                step_config.step_name
+            );
+            None
+        }
+    };
+    let previous_step = if qa_answer.is_some() {
+        Some(crate::providers::PreviousStepContext {
+            from_step: Some(step_config.step_name.clone()),
+            handover: None,
+            qa_answer,
+        })
+    } else {
+        None
+    };
+
     let task_ctx = ProviderTaskContext {
         task_id: task_id.to_string(),
         project_id: project_id.to_string(),
         project_context: user_prompt.to_string(),
-        previous_step: None,
+        previous_step,
         working_dir: Some(worktree_path.to_path_buf()),
         log_file: Some(log_file.to_path_buf()),
         user_prompt: None,
