@@ -6,7 +6,9 @@ use tracing::{error, info, warn};
 
 use crate::config::{ActiveTasks, LockQueue};
 use crate::engine::pipeline::{self, StepOutcome};
+use crate::engine::reports as report_gen;
 use crate::engine::task_source::TaskSource;
+use crate::git::ChangedFile;
 use crate::git::strategy::GitAction;
 use crate::project::paths as project_paths;
 use crate::task_id::TaskId;
@@ -30,6 +32,88 @@ async fn task_requests_preserve_worktree(api: &dyn TaskSource, task_id: &str) ->
     match api.get_task(task_id).await {
         Ok(t) => preserve_worktree_from_task(&t),
         Err(_) => false,
+    }
+}
+
+/// UI-gap #6: emit one report row per kind listed in `task.context.reports`,
+/// after the AllDone branch has finished merge/cleanup. Best-effort —
+/// individual failures (generator data fetch, POST) are logged but do not
+/// block other reports or the task lifecycle.
+///
+/// `diff_data` is `Some(...)` only on the merge path where the branch was
+/// inspected before deletion; on no-merge strategies the diff_summary
+/// generator is skipped (the branch may still exist but mid-flight diff
+/// stats are no longer meaningful at the completion boundary).
+async fn emit_requested_reports(
+    api: &dyn TaskSource,
+    project_id: &str,
+    task_id: &str,
+    diff_data: Option<(&[ChangedFile], usize, usize)>,
+) {
+    let task = match api.get_task(task_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("emit_reports {task_id}: failed to load task: {e} — skipping");
+            return;
+        }
+    };
+
+    let kinds = report_gen::requested_kinds(&task);
+    if kinds.is_empty() {
+        return;
+    }
+    info!(
+        "emit_reports {task_id}: generating {} report(s)",
+        kinds.len()
+    );
+
+    for kind in kinds {
+        let generated = match kind.as_str() {
+            "diff_summary" => {
+                let Some((files, ins, del)) = diff_data else {
+                    info!("emit_reports {task_id}: skipping diff_summary (no-merge run)");
+                    continue;
+                };
+                report_gen::diff_summary(files, ins, del)
+            }
+            "cost_breakdown" => report_gen::cost_breakdown(&task),
+            "qa_log" => {
+                let items = api
+                    .list_qa_items_for_task(task_id, "resolved")
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("emit_reports {task_id}: qa_log fetch failed: {e}");
+                        vec![]
+                    });
+                report_gen::qa_log(&items)
+            }
+            "handover_chain" => {
+                let updates = api.get_task_updates(task_id).await.unwrap_or_else(|e| {
+                    warn!("emit_reports {task_id}: handover_chain fetch failed: {e}");
+                    vec![]
+                });
+                report_gen::handover_chain(&updates)
+            }
+            "knowledge_touched" => {
+                let related = api.get_related_items(task_id).await.unwrap_or_else(|e| {
+                    warn!("emit_reports {task_id}: knowledge_touched fetch failed: {e}");
+                    serde_json::json!({})
+                });
+                report_gen::knowledge_touched(&related)
+            }
+            _ => continue, // unknown kind already filtered by requested_kinds
+        };
+
+        let body = serde_json::json!({
+            "task_id": task_id,
+            "kind": kind,
+            "title": generated.title,
+            "result": generated.body,
+            "metadata": generated.metadata,
+        });
+        if let Err(e) = api.post_auto_report(project_id, &body).await {
+            warn!("emit_reports {task_id}: post {kind} failed: {e}");
+        }
     }
 }
 
@@ -230,6 +314,11 @@ async fn process_reaped_task(
                 }
             };
 
+            // Diff stats are collected here so they survive both the merge
+            // (which deletes the branch) and the auto-report emit below.
+            // `None` on no-merge strategies — diff_summary then skips.
+            let mut diff_data: Option<(Vec<ChangedFile>, usize, usize)> = None;
+
             if git_strategy.should_merge() {
                 let target = git_strategy
                     .merge_target(wm.default_branch())
@@ -239,6 +328,7 @@ async fn process_reaped_task(
                 let changed_files = wm.collect_changed_files(&task_id).unwrap_or_default();
                 let (insertions, deletions) =
                     wm.diff_insertion_deletion_stats(&task_id).unwrap_or((0, 0));
+                diff_data = Some((changed_files.clone(), insertions, deletions));
                 match wm.merge_to_branch(&task_id, target) {
                     Ok(_) => {
                         let file_paths: Vec<&str> =
@@ -319,6 +409,13 @@ async fn process_reaped_task(
             } else {
                 wm.remove_worktree(&task_id);
             }
+
+            // Emit any reports the user requested via `context.reports`.
+            // Runs last so generators see the final task state, after merge
+            // / cleanup / worktree decisions. Best-effort: failures are
+            // logged inside the helper and never block task completion.
+            let diff_ref = diff_data.as_ref().map(|(f, i, d)| (f.as_slice(), *i, *d));
+            emit_requested_reports(api, &project_id, &task_id, diff_ref).await;
         }
         StepOutcome::AlreadyReady => {
             tracing::debug!("task {tid} in human_review — no action needed");

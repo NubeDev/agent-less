@@ -512,6 +512,10 @@ impl TaskSource for LocalTaskSource {
         Ok(json!({}))
     }
 
+    async fn list_qa_items_for_task(&self, _task_id: &str, _status: &str) -> Result<Vec<Value>> {
+        Ok(vec![])
+    }
+
     async fn list_observations(
         &self,
         _project_id: &str,

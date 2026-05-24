@@ -135,6 +135,10 @@ pub trait TaskSource: Send + Sync {
     /// Called from the `StepOutcome::AllDone` branch of the scheduler for
     /// each kind listed in `task.context.reports`.
     async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value>;
+
+    /// List QA items for a task, optionally filtered by status
+    /// (`"resolved"`, `"pending"`, …). Used by the `qa_log` report generator.
+    async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>>;
     async fn list_observations(
         &self,
         project_id: &str,

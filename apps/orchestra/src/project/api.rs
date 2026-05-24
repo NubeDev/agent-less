@@ -910,6 +910,10 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         ProjectsApi::post_auto_report(self, project_id, body).await
     }
 
+    async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>> {
+        ProjectsApi::list_qa_items_for_task(self, task_id, status).await
+    }
+
     async fn post_event(&self, project_id: &str, body: &Value) -> Result<Value> {
         ProjectsApi::post_event(self, project_id, body).await
     }

@@ -241,7 +241,7 @@ fn run_git_in(dir: &Path, args: &[&str], timeout_secs: u64) -> Result<String> {
 
 // ── Result types for git responses ──
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ChangedFile {
     pub path: String,
     pub change_type: String,
