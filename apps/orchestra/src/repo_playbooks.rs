@@ -226,13 +226,31 @@ pub fn resolve_description_files(steps: &mut serde_json::Value, base_dir: &Path)
 /// This is a convenience wrapper around [`discover_playbooks`] + [`parse_playbook`].
 /// Files that fail to parse are logged as warnings and skipped — they do not prevent
 /// other playbooks from loading.
+///
+/// Each successfully loaded playbook is stamped with provenance metadata so callers
+/// (and downstream UI) can show where the YAML came from:
+///   - `metadata.source_path`: repo-relative path, e.g. `.diraigent/playbooks/standard.yaml`.
+///   - `metadata.source_url`: best-effort web URL derived from `.git/config` origin
+///     (only set when the origin parses cleanly into a github/gitlab/forgejo-style URL).
 pub fn load_repo_playbooks(repo_root: &Path) -> Result<Vec<RepoPlaybook>> {
     let paths = discover_playbooks(repo_root)?;
     let mut playbooks = Vec::with_capacity(paths.len());
+    let origin_web = derive_origin_web_url(repo_root);
+    let default_branch = detect_default_branch(repo_root).unwrap_or_else(|| "main".to_string());
 
     for path in &paths {
         match parse_playbook(path) {
-            Ok(pb) => playbooks.push(pb),
+            Ok(mut pb) => {
+                if let Ok(rel) = path.strip_prefix(repo_root) {
+                    stamp_source_metadata(
+                        &mut pb,
+                        &rel.to_string_lossy(),
+                        origin_web.as_deref(),
+                        &default_branch,
+                    );
+                }
+                playbooks.push(pb);
+            }
             Err(e) => {
                 warn!("Skipping invalid playbook {}: {e:#}", path.display());
             }
@@ -240,6 +258,90 @@ pub fn load_repo_playbooks(repo_root: &Path) -> Result<Vec<RepoPlaybook>> {
     }
 
     Ok(playbooks)
+}
+
+/// Stamp `metadata.source_path` and (when derivable) `metadata.source_url` onto a
+/// parsed playbook without clobbering existing user-supplied keys.
+fn stamp_source_metadata(
+    pb: &mut RepoPlaybook,
+    rel_path: &str,
+    origin_web: Option<&str>,
+    default_branch: &str,
+) {
+    let obj = match pb.metadata.as_object_mut() {
+        Some(o) => o,
+        None => {
+            pb.metadata = serde_json::Value::Object(serde_json::Map::new());
+            pb.metadata.as_object_mut().expect("just set to object")
+        }
+    };
+    obj.entry("source_path")
+        .or_insert_with(|| serde_json::Value::String(rel_path.to_string()));
+    if let Some(base) = origin_web
+        && !obj.contains_key("source_url")
+    {
+        obj.insert(
+            "source_url".into(),
+            serde_json::Value::String(format!("{base}/blob/{default_branch}/{rel_path}")),
+        );
+    }
+}
+
+/// Read `.git/config` and convert the `origin` URL to a web URL when possible.
+///
+/// Handles three common shapes:
+///   - `git@host:owner/repo.git`    → `https://host/owner/repo`
+///   - `https://host/owner/repo.git` → `https://host/owner/repo`
+///   - `ssh://git@host/owner/repo.git` → `https://host/owner/repo`
+///
+/// Returns `None` when there is no origin, the URL is unparseable, or the host is
+/// unrecognised (e.g. a local file URL).
+fn derive_origin_web_url(repo_root: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(repo_root.join(".git").join("config")).ok()?;
+    let mut in_origin = false;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_origin = trimmed == "[remote \"origin\"]";
+            continue;
+        }
+        if !in_origin {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("url = ") {
+            return normalize_git_url_to_web(rest.trim());
+        }
+        if let Some(rest) = trimmed.strip_prefix("url=") {
+            return normalize_git_url_to_web(rest.trim());
+        }
+    }
+    None
+}
+
+fn normalize_git_url_to_web(url: &str) -> Option<String> {
+    let stripped = url.strip_suffix(".git").unwrap_or(url);
+    if let Some(rest) = stripped.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        return Some(format!("https://{host}/{path}"));
+    }
+    if let Some(rest) = stripped.strip_prefix("ssh://git@") {
+        let (host, path) = rest.split_once('/')?;
+        return Some(format!("https://{host}/{path}"));
+    }
+    if stripped.starts_with("https://") || stripped.starts_with("http://") {
+        return Some(stripped.to_string());
+    }
+    None
+}
+
+/// Read `.git/HEAD` and extract the default branch name. Returns `None` if HEAD is
+/// detached or the file is missing.
+fn detect_default_branch(repo_root: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(repo_root.join(".git").join("HEAD")).ok()?;
+    let trimmed = head.trim();
+    trimmed
+        .strip_prefix("ref: refs/heads/")
+        .map(|b| b.to_string())
 }
 
 /// Slugify a playbook title for matching against repo filenames.
@@ -657,5 +759,107 @@ steps:
         assert!(arr[0].get("description_file").is_none());
         // Second step: unchanged
         assert_eq!(arr[1]["description"].as_str().unwrap(), "Inline only");
+    }
+
+    #[test]
+    fn load_stamps_source_path_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_yaml(
+            tmp.path(),
+            "standard.yaml",
+            "title: Standard\nsteps:\n  - name: implement\n    description: x\n",
+        );
+
+        let pbs = load_repo_playbooks(tmp.path()).unwrap();
+        assert_eq!(pbs.len(), 1);
+        let src = pbs[0].metadata["source_path"].as_str().unwrap();
+        // Use forward slashes for the path check (works on linux/mac CI).
+        assert_eq!(src, ".diraigent/playbooks/standard.yaml");
+    }
+
+    #[test]
+    fn load_stamps_source_url_from_https_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_yaml(
+            tmp.path(),
+            "standard.yaml",
+            "title: S\nsteps:\n  - name: implement\n    description: x\n",
+        );
+        // minimal .git/config + HEAD
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::write(
+            tmp.path().join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n",
+        )
+        .unwrap();
+        fs::write(tmp.path().join(".git/HEAD"), "ref: refs/heads/trunk\n").unwrap();
+
+        let pbs = load_repo_playbooks(tmp.path()).unwrap();
+        let url = pbs[0].metadata["source_url"].as_str().unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/owner/repo/blob/trunk/.diraigent/playbooks/standard.yaml"
+        );
+    }
+
+    #[test]
+    fn load_stamps_source_url_from_ssh_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_yaml(
+            tmp.path(),
+            "standard.yaml",
+            "title: S\nsteps:\n  - name: implement\n    description: x\n",
+        );
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::write(
+            tmp.path().join(".git/config"),
+            "[remote \"origin\"]\n\turl = git@forgejo.example:team/repo.git\n",
+        )
+        .unwrap();
+        // No HEAD → default branch falls back to "main".
+
+        let pbs = load_repo_playbooks(tmp.path()).unwrap();
+        let url = pbs[0].metadata["source_url"].as_str().unwrap();
+        assert_eq!(
+            url,
+            "https://forgejo.example/team/repo/blob/main/.diraigent/playbooks/standard.yaml"
+        );
+    }
+
+    #[test]
+    fn load_preserves_user_metadata_when_stamping() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_yaml(
+            tmp.path(),
+            "standard.yaml",
+            "title: S\nmetadata:\n  source_url: https://example.com/custom\n  source_path: keep-me\nsteps:\n  - name: implement\n    description: x\n",
+        );
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::write(
+            tmp.path().join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://github.com/owner/repo.git\n",
+        )
+        .unwrap();
+
+        let pbs = load_repo_playbooks(tmp.path()).unwrap();
+        assert_eq!(
+            pbs[0].metadata["source_url"].as_str().unwrap(),
+            "https://example.com/custom"
+        );
+        assert_eq!(pbs[0].metadata["source_path"].as_str().unwrap(), "keep-me");
+    }
+
+    #[test]
+    fn load_omits_source_url_when_no_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_yaml(
+            tmp.path(),
+            "standard.yaml",
+            "title: S\nsteps:\n  - name: implement\n    description: x\n",
+        );
+
+        let pbs = load_repo_playbooks(tmp.path()).unwrap();
+        assert!(pbs[0].metadata.get("source_url").is_none());
+        assert!(pbs[0].metadata.get("source_path").is_some());
     }
 }

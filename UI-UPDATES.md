@@ -356,11 +356,15 @@ panels show "no data yet").
    `metadata.task_id` stamp on knowledge writes so the page can
    show provenance.
 
-5. **Playbook source URL** \u2014 the UI-6 Playbooks page renders an
-   "Edit in git" link only when `playbook.metadata.source_url` (or
-   `git_url`) is present. Seeded defaults don't carry it; the
-   analyzer should populate `source_url` when importing playbooks
-   from disk for the link to appear on user playbooks.
+5. **Playbook source URL** — ⚠️ partial. `load_repo_playbooks` now
+   stamps `metadata.source_path` and a best-effort `metadata.source_url`
+   (derived from `.git/config` origin + `HEAD` branch) onto every
+   playbook parsed from `.diraigent/playbooks/`. Still missing: an
+   orchestra-side WebSocket handler for `WsMessage::PlaybookRequest`
+   so the API's `/v1/projects/{id}/playbooks` proxy actually returns
+   the loaded playbooks (today the request times out — see
+   `a853cb4 fix(web/quick): playbook fetch is non-fatal`). Seeded DB
+   playbooks still won't carry `source_url`.
 
 6. **Advanced-task overrides round-trip** \u2014 UI-4 writes
    `context.qa_override`, `context.session_mode`,
