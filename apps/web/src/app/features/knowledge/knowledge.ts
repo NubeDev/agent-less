@@ -50,6 +50,7 @@ import { FilterBarComponent } from '../../shared/components/filter-bar/filter-ba
         <input
           type="text"
           [(ngModel)]="taskFilter"
+          (ngModelChange)="onTaskFilterChange()"
           placeholder="task id or #number"
           class="bg-surface text-text-primary text-sm rounded-lg px-3 py-2 border border-border
                  focus:outline-none focus:ring-1 focus:ring-accent w-44" />
@@ -193,6 +194,13 @@ export class KnowledgePage extends CrudFeatureBase<SpKnowledge> {
   taskFilter = '';
   aiOnly = false;
 
+  private taskFilterDebounce: ReturnType<typeof setTimeout> | null = null;
+
+  onTaskFilterChange(): void {
+    if (this.taskFilterDebounce) clearTimeout(this.taskFilterDebounce);
+    this.taskFilterDebounce = setTimeout(() => this.loadItems(), 300);
+  }
+
   formTitle = '';
   formCategory: KnowledgeCategory = 'general';
   formContent = '';
@@ -234,7 +242,11 @@ export class KnowledgePage extends CrudFeatureBase<SpKnowledge> {
   override loadItems(): void {
     this.loading.set(true);
     const cat = this.selectedCategory as KnowledgeCategory | '';
-    this.api.list(cat || undefined, this.selectedTag || undefined).subscribe({
+    const tf = this.taskFilter.trim();
+    // Only push to backend when the input looks like a full UUID; otherwise
+    // let the in-memory filter handle short prefixes and #number lookups.
+    const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(tf);
+    this.api.list(cat || undefined, this.selectedTag || undefined, isUuid ? tf : undefined).subscribe({
       next: (items) => this.refreshAfterMutation(items),
       error: () => this.loading.set(false),
     });

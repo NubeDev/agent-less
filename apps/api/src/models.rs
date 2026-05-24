@@ -950,6 +950,8 @@ pub struct WorkFilters {
 pub struct KnowledgeFilters {
     pub category: Option<String>,
     pub tag: Option<String>,
+    /// Filter by `metadata->>'task_id'` (exact match on the UUID string).
+    pub task_id: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }

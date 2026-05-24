@@ -9,7 +9,8 @@ use super::{Table, delete_by_id, fetch_by_id};
 
 const KNOWLEDGE_FILTERS_WHERE: &str = "WHERE project_id = $1 \
     AND ($2::text IS NULL OR category = $2) \
-    AND ($3::text IS NULL OR $3 = ANY(tags))";
+    AND ($3::text IS NULL OR $3 = ANY(tags)) \
+    AND ($4::text IS NULL OR metadata->>'task_id' = $4)";
 
 // ── Knowledge ──
 
@@ -54,7 +55,7 @@ super::list_and_count!(
     KNOWLEDGE_FILTERS_WHERE,
     |f| f.limit,
     |f| f.offset,
-    |q, f| q.bind(&f.category).bind(&f.tag)
+    |q, f| q.bind(&f.category).bind(&f.tag).bind(&f.task_id)
 );
 
 pub async fn update_knowledge(

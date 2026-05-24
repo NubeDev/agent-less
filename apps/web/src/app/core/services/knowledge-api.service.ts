@@ -36,11 +36,12 @@ export interface SpKnowledgeUpdate {
 export class KnowledgeApiService extends BaseCrudApiService<SpKnowledge, SpKnowledgeCreate, SpKnowledgeUpdate> {
   protected readonly resource = 'knowledge';
 
-  list(category?: KnowledgeCategory, tag?: string): Observable<SpKnowledge[]> {
+  list(category?: KnowledgeCategory, tag?: string, taskId?: string): Observable<SpKnowledge[]> {
     if (!this.projectId) return EMPTY;
     const params: Record<string, string> = {};
     if (category) params['category'] = category;
     if (tag) params['tag'] = tag;
+    if (taskId) params['task_id'] = taskId;
     return this.http.get<{ data: SpKnowledge[] }>(
       `${this.baseUrl}/${this.projectId}/${this.resource}`, { params }
     ).pipe(map(res => res.data));
