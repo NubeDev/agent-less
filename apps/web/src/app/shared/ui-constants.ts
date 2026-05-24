@@ -214,12 +214,16 @@ export const AUDIT_ENTITY_TYPE_COLORS: Record<string, string> = {
   integration: 'bg-ctp-mauve/20 text-ctp-mauve',
   playbook: 'bg-ctp-lavender/20 text-ctp-lavender',
   work: 'bg-ctp-green/20 text-ctp-green',
+  qa: 'bg-ctp-peach/20 text-ctp-peach',
 };
 
 export const AUDIT_ACTION_COLORS: Record<string, string> = {
   created: 'text-ctp-green',
   updated: 'text-ctp-yellow',
   deleted: 'text-ctp-red',
+  answered: 'text-ctp-blue',
+  resolved: 'text-ctp-green',
+  expired: 'text-ctp-overlay0',
 };
 
 // ── Storage Keys ────────────────────────────────────────────────────────────

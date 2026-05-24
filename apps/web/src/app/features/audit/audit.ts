@@ -39,6 +39,11 @@ const ACTION_COLORS = AUDIT_ACTION_COLORS;
             <option [value]="et">{{ et }}</option>
           }
         </select>
+        <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+          <input type="checkbox" [(ngModel)]="qaOnly"
+            class="rounded border-border bg-surface text-accent focus:ring-1 focus:ring-accent" />
+          QA events only
+        </label>
         <!-- Entity-specific history lookup -->
         <div class="flex flex-wrap gap-2">
           <input
@@ -168,6 +173,7 @@ export class AuditPage {
   selectedEntityType = '';
   entityIdQuery = '';
   historyMode = signal(false);
+  qaOnly = false;
 
   entityTypes = computed(() => {
     const types = new Set<string>();
@@ -179,10 +185,10 @@ export class AuditPage {
 
   filtered = computed(() => {
     const q = this.searchQuery().toLowerCase().trim();
-    if (!q) return this.items();
-    return this.items().filter(
-      item => item.summary.toLowerCase().includes(q) || item.entity_type.toLowerCase().includes(q),
-    );
+    let result = this.items();
+    if (this.qaOnly) result = result.filter(i => i.entity_type === 'qa');
+    if (q) result = result.filter(i => i.summary.toLowerCase().includes(q) || i.entity_type.toLowerCase().includes(q));
+    return result;
   });
 
   constructor() {
