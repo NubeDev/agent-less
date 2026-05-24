@@ -216,6 +216,7 @@ impl ProjectsApi {
         task_id: &str,
         project_id: &str,
         step_name: &str,
+        kind: &str,
         prompt: &str,
         options: Option<&[String]>,
         responder: &str,
@@ -226,7 +227,7 @@ impl ProjectsApi {
             "project_id": project_id,
             "step_name": step_name,
             "prompt": prompt,
-            "kind": "question",
+            "kind": kind,
             "responder": responder,
         });
         if let Some(opts) = options {
@@ -757,6 +758,7 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         task_id: &str,
         project_id: &str,
         step_name: &str,
+        kind: &str,
         prompt: &str,
         options: Option<&[String]>,
         responder: &str,
@@ -767,6 +769,7 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
             task_id,
             project_id,
             step_name,
+            kind,
             prompt,
             options,
             responder,

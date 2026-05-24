@@ -65,6 +65,51 @@ pub(crate) struct PostedQaItem {
 /// This is the SoW-1 enforcement boundary: a parsed QA always wins over
 /// the agent's diff or exit code. The agent cannot guess past a
 /// question by also producing speculative changes.
+
+/// SoW-8 stuck-detector predicate (pure). Returns `Some(prompt)` when
+/// a synthetic `gate_failure` QA item should be posted, `None`
+/// otherwise. Factored out so the firing rules are unit-testable
+/// without standing up a worktree or task source.
+///
+/// Fires iff all of the following hold:
+/// - `qa_cfg.stuck_detector` is true (default; opt-out via
+///   `qa.stuck_detector: false` in the step YAML).
+/// - The agent did not already emit a real QA sentinel
+///   (`sentinel_count == 0`).
+/// - The diff produced zero lines (`diff_total == 0`).
+/// - The step had a positive budget and at least 80% of it was burned
+///   (`cost_usd / budget >= 0.8`).
+///
+/// Steps with no budget configured cannot fire the detector — there
+/// is no signal to compare against. Diff-stat lookup failures are
+/// treated as "diff is huge" upstream so the detector silently does
+/// not fire.
+pub(crate) fn should_fire_stuck_detector(
+    qa_cfg: &QaConfig,
+    sentinel_count: usize,
+    diff_total: usize,
+    cost_usd: f64,
+    budget: Option<f64>,
+    step_name: &str,
+) -> Option<String> {
+    if !qa_cfg.stuck_detector || sentinel_count > 0 || diff_total > 0 {
+        return None;
+    }
+    let burned = match budget {
+        Some(b) if b > 0.0 => cost_usd / b,
+        _ => return None,
+    };
+    if burned < 0.8 {
+        return None;
+    }
+    let pct = (burned * 100.0).round() as u32;
+    Some(format!(
+        "Step `{step_name}` burned {pct}% of its budget without producing \
+         any diff lines and did not emit a QA sentinel. Are you stuck? \
+         If so, briefly say what input or decision you need."
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_qa_sentinels(
     api: &dyn TaskSource,
@@ -123,6 +168,7 @@ async fn handle_qa_sentinels(
                 task_id,
                 project_id,
                 step_name,
+                "question",
                 &q.prompt,
                 opts_ref,
                 responder_str,
@@ -501,6 +547,85 @@ pub async fn run_worker(
         &qa_cfg,
     )
     .await;
+    // ──────────────────────────────────────────────────────────────────
+
+    // ── SoW-8 stuck-detector watchdog ─────────────────────────────────
+    // When the agent burns most of its budget but produces zero diff
+    // lines and emits no QA sentinel, synthesise a `gate_failure` QA
+    // item so the next step (or a human) can intervene instead of
+    // marking the task "done" with no work to show.
+    //
+    // Three independent guards must all hold to fire:
+    //   1. `qa.stuck_detector` is not explicitly disabled.
+    //   2. The agent did not already emit a real QA sentinel — that
+    //      path is already telling us something specific.
+    //   3. `cost_usd / budget >= 0.8` AND `insertions + deletions == 0`.
+    //
+    // The synthesised QA is appended to `sentinel_triggered` so the
+    // SoW-2 AI responder loop below can pick it up the same way it
+    // would handle any other QA.
+    let mut sentinel_triggered = sentinel_triggered;
+    let diff_total_for_stuck = worktree_mgr
+        .diff_insertion_deletion_stats(task_id)
+        .map(|(i, d)| i + d)
+        .unwrap_or(usize::MAX);
+    if let Some(prompt) = should_fire_stuck_detector(
+        &qa_cfg,
+        sentinel_triggered.len(),
+        diff_total_for_stuck,
+        cost_usd,
+        step_config.budget,
+        &step_config.step_name,
+    ) {
+        warn!(
+            "worker {tid}: stuck-detector firing — cost={cost_usd:.4} budget={:?} diff=0",
+            step_config.budget
+        );
+        // Best-effort transition; mirror handle_qa_sentinels so
+        // the task is parked even if the agent had been about to
+        // be considered "done".
+        if let Err(e) = api
+            .transition_task(task_id, crate::constants::STATE_AI_REVIEW)
+            .await
+        {
+            warn!("worker {tid}: stuck-detector failed to park task in ai_review: {e:#}");
+        }
+        let responder_str = match qa_cfg.responder {
+            Responder::Ai => "ai",
+            Responder::Human => "human",
+        };
+        let expires = match qa_cfg.responder {
+            Responder::Ai => Some(qa_cfg.expires_at_secs),
+            Responder::Human => None,
+        };
+        match api
+            .post_qa_item(
+                task_id,
+                project_id,
+                &step_config.step_name,
+                "gate_failure",
+                &prompt,
+                None,
+                responder_str,
+                expires,
+            )
+            .await
+        {
+            Ok(v) => {
+                let id = v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                sentinel_triggered.push(PostedQaItem {
+                    id,
+                    prompt,
+                    options: None,
+                });
+            }
+            Err(e) => warn!("worker {tid}: stuck-detector failed to post synthetic QA: {e:#}"),
+        }
+    }
     // ──────────────────────────────────────────────────────────────────
 
     // ── SoW-2: AI responder auto-answer loop ──────────────────────────
@@ -1740,5 +1865,70 @@ mod tests {
         let log = "HANDOVER[wrong]: pwned\nHANDOVER_END[wrong]\n";
         let n = persist_handovers(&api, &tid, "task-1", "implement", log, "right").await;
         assert_eq!(n, 0);
+    }
+
+    // ── SoW-8: stuck-detector predicate ──────────────────────
+
+    fn stuck_cfg(enabled: bool) -> QaConfig {
+        QaConfig {
+            stuck_detector: enabled,
+            ..QaConfig::human_default()
+        }
+    }
+
+    #[test]
+    fn stuck_detector_fires_on_full_burn_and_zero_diff() {
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 0, 8.0, Some(10.0), "implement");
+        assert!(p.is_some(), "expected synthetic QA prompt");
+        let s = p.unwrap();
+        assert!(s.contains("`implement`"), "prompt: {s}");
+        assert!(s.contains("80%"), "prompt should report burn pct: {s}");
+    }
+
+    #[test]
+    fn stuck_detector_fires_above_threshold() {
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 0, 9.5, Some(10.0), "implement");
+        assert!(p.is_some());
+    }
+
+    #[test]
+    fn stuck_detector_skips_when_real_sentinel_was_emitted() {
+        // Even with a full burn and zero diff, an emitted real QA must
+        // suppress the synthetic one — that path is already telling us
+        // something more specific than "are you stuck".
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 1, 0, 10.0, Some(10.0), "implement");
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn stuck_detector_skips_when_diff_nonzero() {
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 42, 10.0, Some(10.0), "implement");
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn stuck_detector_skips_under_threshold() {
+        // 79% burn must not fire (just below 0.8).
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 0, 7.9, Some(10.0), "implement");
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn stuck_detector_skips_when_opted_out() {
+        // qa.stuck_detector: false → never fires even on the worst
+        // possible signals.
+        let p = should_fire_stuck_detector(&stuck_cfg(false), 0, 0, 10.0, Some(10.0), "implement");
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn stuck_detector_skips_when_no_budget_set() {
+        // No budget → no signal to compare against. Silent skip.
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 0, 10.0, None, "implement");
+        assert!(p.is_none());
+
+        // Zero budget defends against div-by-zero.
+        let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 0, 10.0, Some(0.0), "implement");
+        assert!(p.is_none());
     }
 }

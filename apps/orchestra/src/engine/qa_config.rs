@@ -67,6 +67,13 @@ pub struct QaConfig {
     /// The worker logs this so playbook authors can see when their
     /// declared accept mode is being overridden for safety.
     pub forced_second_pass: bool,
+    /// SoW-8: when the agent finishes a step having burned most of
+    /// its budget but produced zero diff lines and emitted no QA
+    /// sentinel, synthesise a `gate_failure` QA item asking whether
+    /// it is stuck. Default `true`; set `qa.stuck_detector: false` in
+    /// a step's YAML to opt out (e.g. for steps whose work is
+    /// intentionally non-diff producing like `verify`).
+    pub stuck_detector: bool,
 }
 
 impl QaConfig {
@@ -80,6 +87,7 @@ impl QaConfig {
             on_irreversible: Irreversible::Human,
             expires_at_secs: DEFAULT_AI_EXPIRES_SECS,
             forced_second_pass: false,
+            stuck_detector: true,
         }
     }
 }
@@ -104,6 +112,8 @@ struct RawQa {
     on_irreversible: Option<String>,
     #[serde(default)]
     expires_at_secs: Option<u32>,
+    #[serde(default)]
+    stuck_detector: Option<bool>,
 }
 
 /// Error produced when a step's `qa:` block fails schema validation.
@@ -199,6 +209,7 @@ pub fn resolve_qa_config(
         on_irreversible,
         expires_at_secs,
         forced_second_pass: force_second_pass,
+        stuck_detector: raw.stuck_detector.unwrap_or(true),
     })
 }
 
@@ -353,5 +364,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.expires_at_secs, 60);
+    }
+
+    #[test]
+    fn stuck_detector_defaults_true() {
+        let cfg = QaConfig::human_default();
+        assert!(cfg.stuck_detector);
+
+        let cfg = resolve_qa_config("implement", Some(&json!({"qa": {}}))).unwrap();
+        assert!(cfg.stuck_detector);
+    }
+
+    #[test]
+    fn stuck_detector_can_be_disabled() {
+        let cfg = resolve_qa_config("implement", Some(&json!({"qa": {"stuck_detector": false}})))
+            .unwrap();
+        assert!(!cfg.stuck_detector);
     }
 }

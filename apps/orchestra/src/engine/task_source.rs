@@ -55,6 +55,7 @@ pub trait TaskSource: Send + Sync {
         task_id: &str,
         project_id: &str,
         step_name: &str,
+        kind: &str,
         prompt: &str,
         options: Option<&[String]>,
         responder: &str,

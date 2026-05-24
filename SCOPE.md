@@ -288,30 +288,62 @@ Worker flow (`engine/worker.rs`):
 
 ---
 
-## SoW-8 — Stuck-detector watchdog  ⬜
+## SoW-8 — Stuck-detector watchdog  ✅ DONE
 
 **One-line:** synthesise a QA item when a step burns budget without
 producing a diff.
 
 ### Build
-- [ ] In the post-exit handler (same place as the sentinel parser), compute
+- [x] In the post-exit handler (same place as the sentinel parser), compute
   `budget_burned_fraction` and `diff_line_delta`.
-- [ ] If `burned >= 0.8` AND `delta == 0` AND no sentinel was emitted,
+- [x] If `burned >= 0.8` AND `delta == 0` AND no sentinel was emitted,
   synthesise a QA item:
   - `kind = gate_failure`
   - `prompt = "Step burned {N}% of budget without producing a diff —
      are you stuck? If so, what do you need?"`
   - Routes through the normal QA pipeline (respects step's `qa:` config).
-- [ ] Per-step opt-out: `qa.stuck_detector: false` (default true).
+- [x] Per-step opt-out: `qa.stuck_detector: false` (default true).
 
 ### Tests
-- [ ] Synthetic QA fires on budget-burn + zero-diff.
-- [ ] Does not fire when a real sentinel was emitted (no duplication).
-- [ ] Does not fire when opted out.
+- [x] Synthetic QA fires on budget-burn + zero-diff.
+- [x] Does not fire when a real sentinel was emitted (no duplication).
+- [x] Does not fire when opted out.
 
 ### Exit
 - An agent that thrashes silently now generates a QA item instead of
   finishing "successfully" with no work done.
+
+### How SoW-8 lands
+
+- **Pure predicate.** All firing rules live in
+  `should_fire_stuck_detector(qa_cfg, sentinel_count, diff_total,
+  cost_usd, budget, step_name) -> Option<String>` so the policy is
+  trivial to unit-test without standing up a worktree or task source.
+  The worker just calls the predicate and posts the resulting QA when
+  it returns `Some(prompt)`.
+- **Firing rules.** All four must hold: `qa.stuck_detector != false`,
+  no real sentinel was already emitted (`sentinel_count == 0`),
+  `diff_total == 0` (insertions+deletions), and `cost_usd / budget >=
+  0.8`. Steps with no budget configured silently never fire — there's
+  no signal to compare against and div-by-zero is also guarded.
+- **Same pipeline as real sentinels.** When the predicate fires, the
+  worker transitions the task to `ai_review`, posts the QA via the
+  existing `post_qa_item` (now with explicit `kind` parameter so the
+  synthetic item is tagged `gate_failure` — a kind already permitted
+  by the 047 CHECK constraint), and *appends it to
+  `sentinel_triggered`* so the SoW-2 AI-responder loop picks it up
+  the same way it would any other QA. If the operator has
+  `qa.responder: ai`, the responder may even resolve the stuck-prompt
+  itself with `escalate` (which is exactly what we want when an agent
+  has genuinely got stuck — escalate to a human).
+- **No new schema.** Re-uses `kind=gate_failure`, the existing
+  expires/responder rails, and the existing sweeper.
+- **Tests.** 6 unit tests on the pure predicate cover: fires at full
+  burn + zero diff, fires above threshold, does not fire when
+  sentinel already emitted, does not fire when diff nonzero, does
+  not fire below 80% burn, does not fire when opted out, does not
+  fire without budget. Plus 2 qa_config tests for the new field
+  default + opt-out parsing.
 
 ---
 

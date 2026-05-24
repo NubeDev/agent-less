@@ -331,6 +331,7 @@ impl TaskSource for LocalTaskSource {
         task_id: &str,
         _project_id: &str,
         step_name: &str,
+        kind: &str,
         prompt: &str,
         options: Option<&[String]>,
         responder: &str,
@@ -344,13 +345,13 @@ impl TaskSource for LocalTaskSource {
             "step_name": step_name,
             "prompt": prompt,
             "options": options,
-            "kind": "question",
+            "kind": kind,
             "responder": responder,
             "expires_at": expires_at,
             "status": "pending",
             "created_at": chrono::Utc::now().to_rfc3339(),
         });
-        tracing::info!("local: QA[{task_id}] responder={responder} {prompt}");
+        tracing::info!("local: QA[{task_id}] kind={kind} responder={responder} {prompt}");
         Ok(item)
     }
 

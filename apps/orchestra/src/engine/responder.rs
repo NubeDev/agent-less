@@ -276,6 +276,7 @@ mod tests {
             on_irreversible: Irreversible::Ai,
             expires_at_secs: 300,
             forced_second_pass: false,
+            stuck_detector: true,
         }
     }
 
