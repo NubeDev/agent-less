@@ -1058,7 +1058,19 @@ async fn execute_via_provider(
             .map(String::from),
         allowed_tools_list: step_config.allowed_tools.clone(),
         budget: step_config.budget,
-        env: step_config.env.clone(),
+        env: {
+            // SoW gap #4: surface task/project identifiers to the agent
+            // process via env so `agent-cli knowledge|observation|...`
+            // can auto-stamp `metadata.task_id` for provenance. Project
+            // identifier is included for symmetry with future per-task
+            // scoping. User-supplied step env wins on collision.
+            let mut env = step_config.env.clone();
+            env.entry("DIRAIGENT_TASK_ID".to_string())
+                .or_insert_with(|| task_id.to_string());
+            env.entry("DIRAIGENT_PROJECT_ID".to_string())
+                .or_insert_with(|| project_id.to_string());
+            env
+        },
         system_prompt: Some(system_prompt.to_string()),
         mcp_servers: step_config.mcp_servers.clone(),
         agents: step_config.agents.clone(),

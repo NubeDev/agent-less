@@ -104,6 +104,39 @@ fn load_dotenv() {
     util::load_dotenv();
 }
 
+/// SoW gap #4: stamp `metadata.task_id` onto a knowledge/observation body
+/// from `DIRAIGENT_TASK_ID` when the env var is set and the body has no
+/// existing `metadata.task_id`. Mutates the body in place.
+///
+/// User-supplied `metadata.task_id` wins so an agent writing a cross-cutting
+/// note (or replaying with an explicit `task_id`) is never overridden.
+fn stamp_task_id_metadata(body: &mut serde_json::Value) {
+    let task_id = std::env::var("DIRAIGENT_TASK_ID").ok();
+    stamp_task_id_metadata_with(body, task_id.as_deref());
+}
+
+/// Testable core for [`stamp_task_id_metadata`]. Inserts `metadata.task_id`
+/// only when `task_id` is `Some(non-empty)` and the body doesn't already
+/// carry one.
+fn stamp_task_id_metadata_with(body: &mut serde_json::Value, task_id: Option<&str>) {
+    let task_id = match task_id {
+        Some(t) if !t.is_empty() => t,
+        _ => return,
+    };
+    let obj = match body.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+    let metadata = obj
+        .entry("metadata")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(meta_obj) = metadata.as_object_mut() {
+        meta_obj
+            .entry("task_id")
+            .or_insert_with(|| serde_json::Value::String(task_id.to_string()));
+    }
+}
+
 fn api_url() -> String {
     std::env::var("DIRAIGENT_API_URL").unwrap_or_else(|_| "http://localhost:8082/v1".into())
 }
@@ -523,8 +556,13 @@ async fn main() -> Result<()> {
             project_id,
             json_body,
         } => {
-            let body: serde_json::Value =
+            let mut body: serde_json::Value =
                 serde_json::from_str(&json_body).context("invalid JSON body")?;
+            // SoW gap #4: when this CLI runs inside a worker-spawned agent
+            // process, stamp `metadata.task_id` so the entry can be
+            // attributed to the originating task. User-supplied task_id
+            // wins (the agent may be writing a cross-cutting note).
+            stamp_task_id_metadata(&mut body);
             let result = api.post_knowledge(&project_id, &body).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -688,5 +726,51 @@ fn print_task_table(tasks: &[serde_json::Value], columns: &[&str]) {
                 .collect::<Vec<_>>()
                 .join("")
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stamp_inserts_task_id_when_metadata_missing() {
+        let mut body = json!({ "title": "x", "content": "y" });
+        stamp_task_id_metadata_with(&mut body, Some("task-abc"));
+        assert_eq!(body["metadata"]["task_id"], "task-abc");
+    }
+
+    #[test]
+    fn stamp_inserts_task_id_when_metadata_present_but_no_task_id() {
+        let mut body = json!({ "metadata": { "other": "v" } });
+        stamp_task_id_metadata_with(&mut body, Some("task-abc"));
+        assert_eq!(body["metadata"]["task_id"], "task-abc");
+        assert_eq!(body["metadata"]["other"], "v");
+    }
+
+    #[test]
+    fn stamp_preserves_user_supplied_task_id() {
+        let mut body = json!({ "metadata": { "task_id": "user-task" } });
+        stamp_task_id_metadata_with(&mut body, Some("env-task"));
+        assert_eq!(body["metadata"]["task_id"], "user-task");
+    }
+
+    #[test]
+    fn stamp_noop_when_task_id_absent_or_empty() {
+        let mut body = json!({ "title": "x" });
+        stamp_task_id_metadata_with(&mut body, None);
+        assert!(body.get("metadata").is_none());
+
+        let mut body2 = json!({ "title": "x" });
+        stamp_task_id_metadata_with(&mut body2, Some(""));
+        assert!(body2.get("metadata").is_none());
+    }
+
+    #[test]
+    fn stamp_noop_when_body_is_not_object() {
+        let mut body = json!("scalar");
+        stamp_task_id_metadata_with(&mut body, Some("task-abc"));
+        assert_eq!(body, json!("scalar"));
     }
 }

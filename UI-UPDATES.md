@@ -352,12 +352,16 @@ panels show "no data yet").
    which styles `resolved` green) — webhook subscribers that only
    care about closed-out QAs can listen on `resolved` directly.
 
-4. **Knowledge-touched provenance for tasks** \u2014 UI-5's "Knowledge
-   touched" panel was deferred because the worker does not yet
-   record which knowledge entries it read/created/modified per task.
-   Add either a `task_knowledge_link` join table or a
-   `metadata.task_id` stamp on knowledge writes so the page can
-   show provenance.
+4. **Knowledge-touched provenance for tasks** — ✅ partial. Chose
+   the `metadata.task_id` stamp path (no new join table). The worker
+   now exports `DIRAIGENT_TASK_ID` + `DIRAIGENT_PROJECT_ID` into the
+   spawned agent process's env (`engine/worker.rs`), and `agent-cli
+   knowledge` auto-injects `metadata.task_id` from that env when the
+   body doesn't already carry one (user-supplied wins). Combined
+   with gap #1's `task_id` query param, the "Knowledge touched"
+   panel can now scope by task. Still TODO: extend the stamp to
+   `agent-cli observation` / `decision` for full provenance across
+   all task-emitted entries.
 
 5. **Playbook source URL** — ✅ resolved. `load_repo_playbooks` stamps
    `metadata.source_path` and a best-effort `metadata.source_url`
