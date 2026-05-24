@@ -252,6 +252,7 @@ impl TaskSource for OrchestraTaskSource {
         options: Option<&[String]>,
         responder: &str,
         expires_at_secs: Option<u32>,
+        sentinel_raw: Option<&str>,
     ) -> Result<Value> {
         // Orchestra-source delegates to the upstream API: the QA loop
         // (SoW-1) is rendered server-side and surfaced over SSE.
@@ -265,6 +266,7 @@ impl TaskSource for OrchestraTaskSource {
                 options,
                 responder,
                 expires_at_secs,
+                sentinel_raw,
             )
             .await
     }

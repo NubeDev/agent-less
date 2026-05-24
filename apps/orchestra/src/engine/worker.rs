@@ -55,16 +55,9 @@ pub(crate) struct PostedQaItem {
     pub options: Option<Vec<String>>,
 }
 
-/// Parse QA sentinel blocks out of the agent's log and, if any are
-/// present, park the task in `ai_review` and persist each as a
-/// `task_qa_item` via the API. Returns the freshly-posted QA items
-/// (empty when no sentinel landed). The caller treats a non-empty
-/// vector as the SoW-1 "agent emitted a question" signal and uses the
-/// IDs to drive the SoW-2 auto-answer loop.
-///
-/// This is the SoW-1 enforcement boundary: a parsed QA always wins over
-/// the agent's diff or exit code. The agent cannot guess past a
-/// question by also producing speculative changes.
+// (the `handle_qa_sentinels` helper below carries the SoW-1 docstring;
+// here we keep a small pure helper for SoW-8 so its firing rules can be
+// unit-tested without standing up a worktree or task source.)
 
 /// SoW-8 stuck-detector predicate (pure). Returns `Some(prompt)` when
 /// a synthetic `gate_failure` QA item should be posted, `None`
@@ -111,6 +104,16 @@ pub(crate) fn should_fire_stuck_detector(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Parse QA sentinel blocks out of the agent's log and, if any are
+/// present, park the task in `ai_review` and persist each as a
+/// `task_qa_item` via the API. Returns the freshly-posted QA items
+/// (empty when no sentinel landed). The caller treats a non-empty
+/// vector as the SoW-1 "agent emitted a question" signal and uses the
+/// IDs to drive the SoW-2 auto-answer loop.
+///
+/// This is the SoW-1 enforcement boundary: a parsed QA always wins
+/// over the agent's diff or exit code. The agent cannot guess past a
+/// question by also producing speculative changes.
 async fn handle_qa_sentinels(
     api: &dyn TaskSource,
     tid: &TaskId,
@@ -173,6 +176,7 @@ async fn handle_qa_sentinels(
                 opts_ref,
                 responder_str,
                 expires,
+                Some(&q.raw),
             )
             .await
         {
@@ -608,6 +612,7 @@ pub async fn run_worker(
                 None,
                 responder_str,
                 expires,
+                None,
             )
             .await
         {

@@ -221,6 +221,7 @@ impl ProjectsApi {
         options: Option<&[String]>,
         responder: &str,
         expires_at_secs: Option<u32>,
+        sentinel_raw: Option<&str>,
     ) -> Result<Value> {
         let mut body = serde_json::json!({
             "task_id": task_id,
@@ -240,6 +241,13 @@ impl ProjectsApi {
         if let Some(secs) = expires_at_secs {
             let expires_at = chrono::Utc::now() + chrono::Duration::seconds(secs as i64);
             body["expires_at"] = serde_json::Value::String(expires_at.to_rfc3339());
+        }
+        // SoW gap #10 (forensics): stash the verbatim sentinel block
+        // in `metadata.sentinel_raw` so operators can debug "why did
+        // this fire?" without grepping the log. Synthetic QAs (e.g.
+        // the SoW-8 stuck-detector) pass `None` and get nothing.
+        if let Some(raw) = sentinel_raw {
+            body["metadata"] = serde_json::json!({ "sentinel_raw": raw });
         }
         self.post("/qa", &body).await
     }
@@ -763,6 +771,7 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         options: Option<&[String]>,
         responder: &str,
         expires_at_secs: Option<u32>,
+        sentinel_raw: Option<&str>,
     ) -> Result<Value> {
         ProjectsApi::post_qa_item(
             self,
@@ -774,6 +783,7 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
             options,
             responder,
             expires_at_secs,
+            sentinel_raw,
         )
         .await
     }

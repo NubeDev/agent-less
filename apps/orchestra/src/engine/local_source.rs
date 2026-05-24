@@ -336,6 +336,7 @@ impl TaskSource for LocalTaskSource {
         options: Option<&[String]>,
         responder: &str,
         expires_at_secs: Option<u32>,
+        _sentinel_raw: Option<&str>,
     ) -> Result<Value> {
         let expires_at = expires_at_secs
             .map(|s| (chrono::Utc::now() + chrono::Duration::seconds(s as i64)).to_rfc3339());

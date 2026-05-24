@@ -60,6 +60,7 @@ pub trait TaskSource: Send + Sync {
         options: Option<&[String]>,
         responder: &str,
         expires_at_secs: Option<u32>,
+        sentinel_raw: Option<&str>,
     ) -> Result<Value>;
     /// SoW-2: post an AI-produced answer for a QA item. The API
     /// validates the implied state transition, records the answer, and

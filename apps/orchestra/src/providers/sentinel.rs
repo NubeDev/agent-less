@@ -42,13 +42,29 @@ pub struct ParsedSentinels {
 pub struct ParsedQuestion {
     pub prompt: String,
     pub options: Option<Vec<String>>,
+    /// Verbatim text of the matched block (open line through close
+    /// line, joined with `\n`). Persisted to `task_qa_item.metadata.
+    /// sentinel_raw` so operators can debug "why did this fire?"
+    /// without grepping logs.
+    pub raw: String,
 }
 
 /// A parsed `HANDOVER[<nonce>]` block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedHandover {
     pub body: String,
+    /// Verbatim text of the matched block (forensic record, mirrors
+    /// [`ParsedQuestion::raw`]).
+    pub raw: String,
 }
+
+/// Hard cap on how many QA sentinels the parser will accept from a
+/// single step's log. A confused or adversarial agent could otherwise
+/// emit dozens of questions in one run; we keep the first N and drop
+/// the rest with a `tracing::warn!`. The cap is intentionally generous
+/// — operators who hit it have a real problem that should surface,
+/// not be silently absorbed.
+pub const MAX_QA_PER_STEP: usize = 3;
 
 /// Parse a step's log and return all sentinel blocks whose nonce matches
 /// `nonce`. Sentinels with the wrong nonce are silently ignored.
@@ -71,12 +87,15 @@ pub fn parse(log_text: &str, nonce: &str) -> ParsedSentinels {
         // ── QA block ──
         if let Some(rest) = line.strip_prefix(&qa_open) {
             let mut prompt = String::from(rest);
+            let mut raw = String::from(line);
             let mut j = i + 1;
             let mut options: Option<Vec<String>> = None;
             let mut closed = false;
 
             while j < lines.len() {
                 let l = lines[j];
+                raw.push('\n');
+                raw.push_str(l);
                 if l == qa_close {
                     closed = true;
                     j += 1;
@@ -102,6 +121,7 @@ pub fn parse(log_text: &str, nonce: &str) -> ParsedSentinels {
                 out.questions.push(ParsedQuestion {
                     prompt: prompt.trim_end().to_string(),
                     options,
+                    raw,
                 });
                 i = j;
                 continue;
@@ -114,10 +134,13 @@ pub fn parse(log_text: &str, nonce: &str) -> ParsedSentinels {
         // ── Handover block ──
         if let Some(rest) = line.strip_prefix(&handover_open) {
             let mut body = String::from(rest);
+            let mut raw = String::from(line);
             let mut j = i + 1;
             let mut closed = false;
             while j < lines.len() {
                 let l = lines[j];
+                raw.push('\n');
+                raw.push_str(l);
                 if l == handover_close {
                     closed = true;
                     j += 1;
@@ -130,6 +153,7 @@ pub fn parse(log_text: &str, nonce: &str) -> ParsedSentinels {
             if closed {
                 out.handovers.push(ParsedHandover {
                     body: body.trim_end().to_string(),
+                    raw,
                 });
                 i = j;
                 continue;
@@ -139,6 +163,19 @@ pub fn parse(log_text: &str, nonce: &str) -> ParsedSentinels {
         }
 
         i += 1;
+    }
+
+    // Cap QA emissions per step. A confused agent could spam many
+    // questions in one run; the first MAX_QA_PER_STEP are kept, the
+    // rest are dropped with a warning so operators see the signal.
+    if out.questions.len() > MAX_QA_PER_STEP {
+        let dropped = out.questions.len() - MAX_QA_PER_STEP;
+        tracing::warn!(
+            "sentinel parser: dropping {dropped} QA sentinel(s) above cap of {MAX_QA_PER_STEP} \
+             — agent emitted {} total",
+            out.questions.len()
+        );
+        out.questions.truncate(MAX_QA_PER_STEP);
     }
 
     out
@@ -257,5 +294,62 @@ mod tests {
                    DIRAIGENT_QA[abcd]: also this\nDIRAIGENT_QA_END[abcd]\n";
         let p = parse(log, NONCE);
         assert!(p.questions.is_empty());
+    }
+
+    #[test]
+    fn qa_raw_captures_verbatim_block() {
+        let log = "DIRAIGENT_QA[7f3a]: Pick storage?\n\
+                   DIRAIGENT_QA_OPTIONS[7f3a]: pg|sqlite\n\
+                   DIRAIGENT_QA_END[7f3a]\n";
+        let p = parse(log, NONCE);
+        assert_eq!(p.questions.len(), 1);
+        let raw = &p.questions[0].raw;
+        assert!(
+            raw.starts_with("DIRAIGENT_QA[7f3a]: Pick storage?"),
+            "raw: {raw}"
+        );
+        assert!(raw.contains("DIRAIGENT_QA_OPTIONS[7f3a]: pg|sqlite"));
+        assert!(raw.ends_with("DIRAIGENT_QA_END[7f3a]"));
+    }
+
+    #[test]
+    fn handover_raw_captures_verbatim_block() {
+        let log = "HANDOVER[7f3a]: shipped foo\nmore body\nHANDOVER_END[7f3a]\n";
+        let p = parse(log, NONCE);
+        assert_eq!(p.handovers.len(), 1);
+        let raw = &p.handovers[0].raw;
+        assert!(raw.starts_with("HANDOVER[7f3a]: shipped foo"));
+        assert!(raw.ends_with("HANDOVER_END[7f3a]"));
+    }
+
+    #[test]
+    fn qa_emissions_capped_at_max_per_step() {
+        // Five back-to-back QA blocks. Parser must keep the first
+        // MAX_QA_PER_STEP (3) and drop the rest with a warning.
+        let mut log = String::new();
+        for i in 0..5 {
+            log.push_str(&format!(
+                "DIRAIGENT_QA[7f3a]: q{i}\nDIRAIGENT_QA_END[7f3a]\n"
+            ));
+        }
+        let p = parse(&log, NONCE);
+        assert_eq!(p.questions.len(), MAX_QA_PER_STEP);
+        // First three preserved in order.
+        assert_eq!(p.questions[0].prompt, "q0");
+        assert_eq!(p.questions[1].prompt, "q1");
+        assert_eq!(p.questions[2].prompt, "q2");
+    }
+
+    #[test]
+    fn at_cap_is_not_truncated() {
+        // Exactly MAX_QA_PER_STEP must NOT be truncated.
+        let mut log = String::new();
+        for i in 0..MAX_QA_PER_STEP {
+            log.push_str(&format!(
+                "DIRAIGENT_QA[7f3a]: q{i}\nDIRAIGENT_QA_END[7f3a]\n"
+            ));
+        }
+        let p = parse(&log, NONCE);
+        assert_eq!(p.questions.len(), MAX_QA_PER_STEP);
     }
 }
