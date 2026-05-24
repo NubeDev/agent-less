@@ -360,16 +360,17 @@ panels show "no data yet").
    which styles `resolved` green) — webhook subscribers that only
    care about closed-out QAs can listen on `resolved` directly.
 
-4. **Knowledge-touched provenance for tasks** — ✅ partial. Chose
+4. **Knowledge-touched provenance for tasks** — ✅ resolved. Chose
    the `metadata.task_id` stamp path (no new join table). The worker
-   now exports `DIRAIGENT_TASK_ID` + `DIRAIGENT_PROJECT_ID` into the
+   exports `DIRAIGENT_TASK_ID` + `DIRAIGENT_PROJECT_ID` into the
    spawned agent process's env (`engine/worker.rs`), and `agent-cli
-   knowledge` auto-injects `metadata.task_id` from that env when the
-   body doesn't already carry one (user-supplied wins). Combined
-   with gap #1's `task_id` query param, the "Knowledge touched"
-   panel can now scope by task. Still TODO: extend the stamp to
-   `agent-cli observation` / `decision` for full provenance across
-   all task-emitted entries.
+   knowledge` / `observation` / `decision` all auto-inject
+   `metadata.task_id` from that env when the body doesn't already
+   carry one (user-supplied wins, so cross-cutting notes can opt out
+   by setting an explicit `task_id`). Combined with gap #1's
+   `task_id` query param, the "Knowledge touched" panel and any
+   task-scoped observation / decision listing now have full
+   provenance for entries the agent posted while running the task.
 
 5. **Playbook source URL** — ✅ resolved. `load_repo_playbooks` stamps
    `metadata.source_path` and a best-effort `metadata.source_url`

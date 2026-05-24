@@ -104,9 +104,10 @@ fn load_dotenv() {
     util::load_dotenv();
 }
 
-/// SoW gap #4: stamp `metadata.task_id` onto a knowledge/observation body
-/// from `DIRAIGENT_TASK_ID` when the env var is set and the body has no
-/// existing `metadata.task_id`. Mutates the body in place.
+/// SoW gap #4: stamp `metadata.task_id` onto a
+/// knowledge / observation / decision body from `DIRAIGENT_TASK_ID`
+/// when the env var is set and the body has no existing
+/// `metadata.task_id`. Mutates the body in place.
 ///
 /// User-supplied `metadata.task_id` wins so an agent writing a cross-cutting
 /// note (or replaying with an explicit `task_id`) is never overridden.
@@ -547,8 +548,12 @@ async fn main() -> Result<()> {
             project_id,
             json_body,
         } => {
-            let body: serde_json::Value =
+            let mut body: serde_json::Value =
                 serde_json::from_str(&json_body).context("invalid JSON body")?;
+            // SoW gap #4: stamp `metadata.task_id` so observations posted
+            // by a worker-spawned agent are attributable to the originating
+            // task. User-supplied task_id wins.
+            stamp_task_id_metadata(&mut body);
             let result = api.post_observation(&project_id, &body).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -570,8 +575,12 @@ async fn main() -> Result<()> {
             project_id,
             json_body,
         } => {
-            let body: serde_json::Value =
+            let mut body: serde_json::Value =
                 serde_json::from_str(&json_body).context("invalid JSON body")?;
+            // SoW gap #4: stamp `metadata.task_id` so decisions posted by
+            // a worker-spawned agent are attributable to the originating
+            // task. User-supplied task_id wins.
+            stamp_task_id_metadata(&mut body);
             let result = api.post_decision(&project_id, &body).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
