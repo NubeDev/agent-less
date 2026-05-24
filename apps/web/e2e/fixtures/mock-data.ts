@@ -276,7 +276,7 @@ export const auditEntries = [
 
 export const reports = [
   { id: 'rpt1', project_id: PROJECT_ID, title: 'Weekly Sprint Report — Week 11', status: 'published', kind: 'sprint', content: '## Summary\n\n31 tasks completed, 6 in progress. Authentication system 80% complete.', metadata: {}, created_by: AGENT_ID, created_at: '2026-03-14T18:00:00Z', updated_at: '2026-03-14T18:00:00Z' },
-  { id: 'rpt2', project_id: PROJECT_ID, title: 'Architecture Review — API Layer', status: 'draft', kind: 'review', content: '## Findings\n\nThe API layer is well-structured with consistent patterns...', metadata: {}, created_by: AGENT_ID, created_at: '2026-03-13T10:00:00Z', updated_at: '2026-03-13T10:00:00Z' },
+  { id: 'rpt2', project_id: PROJECT_ID, title: 'Architecture Review — API Layer', status: 'pending', kind: 'review', content: '## Findings\n\nThe API layer is well-structured with consistent patterns...', metadata: {}, created_by: AGENT_ID, created_at: '2026-03-13T10:00:00Z', updated_at: '2026-03-13T10:00:00Z' },
 ];
 
 export const sourceTree = {

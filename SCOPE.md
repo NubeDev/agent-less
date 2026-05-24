@@ -394,11 +394,28 @@ SoW-2.
    role_id)`) matches the repo's `ON CONFLICT (tenant_id, agent_id,
    role_id) DO UPDATE`. Pinned by `create_membership_upserts_on_duplicate`
    integration test; NEW-TASK.md troubleshooting note updated.
-4. **Stale state-machine vocabulary** (`draft`/`in_progress`/`blocked`)
-   probably still lingers in comments, UI strings, or older migrations.
-   20-min `grep -ri 'in_progress\|draft' apps/` audit + sweep.
-5. **Port duplication.** Compose stack uses 4200/8082/5433; `make start`
-   uses 4280/3100/5488. Fine if intentional; document the why or unify.
+4. **Stale state-machine vocabulary** ✅ Audited. `grep -rEn
+   "(in_progress|draft|blocked)" apps/ libs/` (excluding target /
+   node_modules / migrations) yields no real task-state stragglers:
+   - `in_progress` is the legit `Report.status` enum value
+     (`models.rs::REPORT_STATUSES`) and a synthetic counter in
+     `repository::metrics::task_summary`, consumed by web dashboard
+     + tui + iOS + i18n. Not state-machine vocabulary.
+   - `draft` had a single stale mock in
+     `apps/web/e2e/fixtures/mock-data.ts` for a Report fixture
+     (real statuses: pending/in_progress/completed/failed). Fixed
+     to `pending`.
+   - `blocked` is i18n label text for QA blocker affordances, not
+     a task state.
+   The fact that no real `draft` task state exists in production code
+   confirms the cleanup the original migration intended already
+   completed.
+5. **Port duplication.** ✅ Documented in `LOCAL-DEV.md` under "Ports"
+   with a 3-column table showing `make start` (dev) vs
+   `docker-compose.yml` (demo) vs upstream default, plus the rationale
+   (run both stacks in parallel) and a mnemonic (`+88 / +100 / +80`).
+   Stayed unified intentionally; not unifying because the parallel-run
+   capability is the whole point.
 6. **License: SSPL.** Contributor/fork friction. Not urgent.
 
 ### Behavioural gaps the AI-responder loop creates

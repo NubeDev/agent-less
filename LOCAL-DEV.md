@@ -13,13 +13,25 @@ use the Makefile flow below on Linux.
 
 ## Ports
 
-Non-default ports are used to avoid clashes with anything you already have running:
+Two parallel port sets exist on purpose so the **`make start`** dev
+loop and the **`startup/docker-compose.yml`** demo stack can run
+simultaneously without colliding (run a stable backend in compose,
+iterate on the API/web in `make`):
 
-| Service  | Port |
-|----------|------|
-| Postgres | 5488 |
-| API      | 3100 |
-| Web      | 4280 |
+| Service  | `make start` (dev) | `docker-compose.yml` (demo) | Upstream default |
+|----------|:------------------:|:---------------------------:|:----------------:|
+| Postgres | **5488**           | 5433                        | 5432             |
+| API      | **3100**           | 3000                        | 3000             |
+| Web      | **4280**           | 4200                        | 4200 (ng serve)  |
+
+Mnemonic for the `make` set: append `+88`, `+100`, `+80` to the
+"natural" port. The default everywhere in this doc is the `make`
+column — `docker-compose.yml` is only relevant when you want a
+self-contained demo (API + Web + orchestra in containers).
+
+If you only ever run one or the other, the duplication is invisible.
+If you ever change a port, change it in **both** places and update
+this table.
 
 ## Quick Start
 
