@@ -382,14 +382,15 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ 10 of 12 fields shipped
+6. **Advanced-task overrides round-trip** — ⚠️ 11 of 12 fields shipped
    (`env`, `mcp`, `qa_override`, `model_override`, `budget_usd_cap`,
    `preserve_worktree`, `knowledge.{pin_ids,exclude_tags}`,
-   `integrations_allowed`, `reports`, `session_mode`).
-   Only `verifications.{ids,fail_fast,extra_test_cmd}` is still
-   ignored by the runtime — deferred per the original handover
-   recommendation since no verifications subsystem exists yet and
-   no user has asked for it. UI-4 persists `qa_override`, `session_mode`,
+   `integrations_allowed`, `reports`, `session_mode`, and
+   `verifications.{extra_test_cmd, fail_fast}` per ADR 0002 Tier 1).
+   Only `verifications.ids` remains ignored — Tier 3 per ADR 0002,
+   pending a runnable verification template subsystem (likely
+   repo-side YAML symmetric with playbooks). UI-4 persists
+   `qa_override`, `session_mode`,
    `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
    `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
    `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
@@ -509,10 +510,35 @@ panels show "no data yet").
      tests cover the parser (default, explicit per_step, shared,
      case-insensitive, typos / non-strings).
 
+   - `verifications.extra_test_cmd` + `verifications.fail_fast` → ADR
+     0002 Tier 1 in [docs/adr/0002-task-context-verifications.md](docs/adr/0002-task-context-verifications.md).
+     `verifications_policy_from_task` in
+     [engine/scheduler.rs](apps/orchestra/src/engine/scheduler.rs)
+     parses the block (object-only, trimmed non-empty cmd, fail_fast
+     bool-or-stringy). `run_extra_test_cmd_and_record` shells out
+     via `sh -c` in the task worktree with a 600s hard timeout,
+     truncates each captured stream to 4 KiB, and records the outcome
+     as a `diraigent.verification` row (kind=test, status=pass/fail,
+     title=extra_test_cmd, detail=cmd, evidence={exit_code,
+     duration_ms, stdout, stderr}) via a new
+     `TaskSource::create_verification` wrapping the already-existing
+     `POST /{project_id}/verifications` endpoint. When the command
+     fails AND `fail_fast=true`, the AllDone branch skips merge /
+     push / cleanup entirely, posts an explanatory comment, and
+     transitions the task to `human_review`; the worktree is
+     preserved on disk for inspection regardless of
+     `preserve_worktree`. Reports still emit so cost / qa /
+     handover artefacts land on the failure path. 9 parser unit
+     tests cover missing block, missing cmd, empty / whitespace cmd,
+     non-string cmd, default fail_fast, bool true, stringy true
+     variants, falsey + unexpected fail_fast types, cmd trimming,
+     and non-object block rejection.
+
    Each remaining field is a discrete worker change; until those land,
    the advanced UI must NOT be shipped as "supported" for them — it
    stores intent that the runtime silently discards. Remaining:
-   `verifications.*` (deferred — no subsystem exists yet).
+   `verifications.ids` (Tier 3 — deferred until a user asks; design
+   captured in ADR 0002).
 
 ---
 

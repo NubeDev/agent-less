@@ -512,6 +512,14 @@ impl TaskSource for LocalTaskSource {
         Ok(json!({}))
     }
 
+    async fn create_verification(&self, _project_id: &str, body: &Value) -> Result<Value> {
+        let kind = body["kind"].as_str().unwrap_or("test");
+        let status = body["status"].as_str().unwrap_or("pass");
+        let title = body["title"].as_str().unwrap_or("verification");
+        tracing::info!("local verification [{kind}/{status}]: {title}");
+        Ok(json!({}))
+    }
+
     async fn list_qa_items_for_task(&self, _task_id: &str, _status: &str) -> Result<Vec<Value>> {
         Ok(vec![])
     }

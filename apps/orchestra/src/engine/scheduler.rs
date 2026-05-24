@@ -12,7 +12,6 @@ use crate::git::ChangedFile;
 use crate::git::strategy::GitAction;
 use crate::project::paths as project_paths;
 use crate::task_id::TaskId;
-
 /// UI-gap #6: extract `task.context.preserve_worktree` (boolean) from a
 /// loaded task JSON. Pure helper so the parsing rules are testable.
 /// Accepts both `true` and the string `"true"`/`"1"` for robustness, since
@@ -33,6 +32,139 @@ async fn task_requests_preserve_worktree(api: &dyn TaskSource, task_id: &str) ->
         Ok(t) => preserve_worktree_from_task(&t),
         Err(_) => false,
     }
+}
+
+/// ADR 0002 Tier 1: parsed `task.context.verifications` slice.
+/// Only `extra_test_cmd` and `fail_fast` are actioned in Tier 1; `ids`
+/// is intentionally Tier 3 and parsed nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerificationsPolicy {
+    pub extra_test_cmd: String,
+    pub fail_fast: bool,
+}
+
+/// Pure parser for `task.context.verifications`. Returns `None` when there
+/// is no actionable `extra_test_cmd` (missing block, missing field, empty /
+/// whitespace-only string, or non-string type) so the caller can skip the
+/// runner entirely without paying for a process spawn.
+pub(crate) fn verifications_policy_from_task(
+    task: &serde_json::Value,
+) -> Option<VerificationsPolicy> {
+    let v = &task["context"]["verifications"];
+    if !v.is_object() {
+        return None;
+    }
+    let cmd = v["extra_test_cmd"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if cmd.is_empty() {
+        return None;
+    }
+    let ff = &v["fail_fast"];
+    let fail_fast = ff.as_bool().unwrap_or_else(|| match ff.as_str() {
+        Some(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes"),
+        None => false,
+    });
+    Some(VerificationsPolicy {
+        extra_test_cmd: cmd,
+        fail_fast,
+    })
+}
+
+/// Truncate a captured stream to a fixed tail so a verbose test suite never
+/// blows up the `evidence` JSONB column. Keeps the *end* of the stream,
+/// where the failure message usually lives.
+fn truncate_stream(s: &str) -> String {
+    const MAX: usize = 4096;
+    if s.len() <= MAX {
+        s.to_string()
+    } else {
+        let tail = &s[s.len() - MAX..];
+        format!("…[truncated {} bytes]…\n{tail}", s.len() - MAX)
+    }
+}
+
+/// Run the user's `extra_test_cmd` inside the task worktree and record the
+/// outcome as a `diraigent.verification` row via `api.create_verification`.
+/// Returns `true` when the command succeeded (exit 0), `false` otherwise.
+///
+/// Best-effort everywhere: a spawn failure, timeout, or DB write failure is
+/// logged and degrades to "verification failed" / "not recorded"; the caller
+/// continues based on the boolean.
+async fn run_extra_test_cmd_and_record(
+    api: &dyn TaskSource,
+    project_id: &str,
+    task_id: &str,
+    worktree: &Path,
+    cmd: &str,
+) -> bool {
+    use std::time::Instant;
+    use tokio::process::Command;
+
+    info!(
+        "task {task_id}: running extra_test_cmd in {}",
+        worktree.display()
+    );
+    let start = Instant::now();
+    let spawn = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(worktree)
+        .output();
+
+    // Hard timeout so a hung test command can't wedge the scheduler.
+    const TIMEOUT_SECS: u64 = 600;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(TIMEOUT_SECS), spawn).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    let (passed, exit_code, stdout, stderr) = match result {
+        Ok(Ok(o)) => {
+            let code = o.status.code().unwrap_or(-1);
+            let passed = o.status.success();
+            (
+                passed,
+                code,
+                truncate_stream(&String::from_utf8_lossy(&o.stdout)),
+                truncate_stream(&String::from_utf8_lossy(&o.stderr)),
+            )
+        }
+        Ok(Err(e)) => {
+            warn!("task {task_id}: extra_test_cmd spawn failed: {e}");
+            (false, -1, String::new(), format!("spawn failed: {e}"))
+        }
+        Err(_) => {
+            warn!(
+                "task {task_id}: extra_test_cmd timed out after {TIMEOUT_SECS}s — recording fail"
+            );
+            (
+                false,
+                -1,
+                String::new(),
+                format!("timed out after {TIMEOUT_SECS}s"),
+            )
+        }
+    };
+
+    let status = if passed { "pass" } else { "fail" };
+    let body = serde_json::json!({
+        "task_id": task_id,
+        "kind": "test",
+        "status": status,
+        "title": "extra_test_cmd",
+        "detail": cmd,
+        "evidence": {
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+    });
+    if let Err(e) = api.create_verification(project_id, &body).await {
+        warn!("task {task_id}: failed to record verification row: {e}");
+    }
+    passed
 }
 
 /// UI-gap #6: emit one report row per kind listed in `task.context.reports`,
@@ -314,12 +446,60 @@ async fn process_reaped_task(
                 }
             };
 
+            // ADR 0002 Tier 1: run `context.verifications.extra_test_cmd`
+            // BEFORE the merge so a fail+fail_fast short-circuit can skip
+            // merging broken code into the default branch. The worktree is
+            // still in place at this point.
+            let mut verification_blocked_merge = false;
+            if let Ok(task_json) = api.get_task(&task_id).await
+                && let Some(policy) = verifications_policy_from_task(&task_json)
+            {
+                let worktree = wm.worktree_path(&task_id);
+                if worktree.exists() {
+                    let passed = run_extra_test_cmd_and_record(
+                        api,
+                        &project_id,
+                        &task_id,
+                        &worktree,
+                        &policy.extra_test_cmd,
+                    )
+                    .await;
+                    if !passed && policy.fail_fast {
+                        info!(
+                            "task {tid}: extra_test_cmd failed + fail_fast — skipping merge, preserving worktree"
+                        );
+                        verification_blocked_merge = true;
+                        let msg = format!(
+                            "extra_test_cmd failed (exit non-zero). fail_fast=true: \
+                             skipping merge. Worktree preserved at {} for inspection.",
+                            worktree.display()
+                        );
+                        if let Err(e) = api.post_comment(&task_id, &msg).await {
+                            warn!("failed to post verification-failure comment for {tid}: {e}");
+                        }
+                        if let Err(e) = api.transition_task(&task_id, "human_review").await {
+                            warn!(
+                                "failed to transition {tid} to human_review after verification fail: {e}"
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "task {tid}: extra_test_cmd requested but worktree {} missing — skipping",
+                        worktree.display()
+                    );
+                }
+            }
+
             // Diff stats are collected here so they survive both the merge
             // (which deletes the branch) and the auto-report emit below.
             // `None` on no-merge strategies — diff_summary then skips.
             let mut diff_data: Option<(Vec<ChangedFile>, usize, usize)> = None;
 
-            if git_strategy.should_merge() {
+            if verification_blocked_merge {
+                // Skip the merge / push / cleanup tree entirely. Reports
+                // still run below so cost / qa / handover artefacts land.
+            } else if git_strategy.should_merge() {
                 let target = git_strategy
                     .merge_target(wm.default_branch())
                     .unwrap_or_else(|| wm.default_branch());
@@ -628,6 +808,119 @@ mod tests {
         ] {
             let task = serde_json::json!({"context": {"preserve_worktree": v}});
             assert!(!preserve_worktree_from_task(&task));
+        }
+    }
+
+    // ── ADR 0002 Tier 1: verifications policy parser ────────────
+
+    #[test]
+    fn verifications_none_when_block_missing() {
+        let task = serde_json::json!({"context": {}});
+        assert!(verifications_policy_from_task(&task).is_none());
+    }
+
+    #[test]
+    fn verifications_none_when_no_context() {
+        let task = serde_json::json!({});
+        assert!(verifications_policy_from_task(&task).is_none());
+    }
+
+    #[test]
+    fn verifications_none_when_cmd_empty_or_missing() {
+        for ctx in [
+            serde_json::json!({"verifications": {}}),
+            serde_json::json!({"verifications": {"extra_test_cmd": ""}}),
+            serde_json::json!({"verifications": {"extra_test_cmd": "   "}}),
+            serde_json::json!({"verifications": {"extra_test_cmd": 42}}),
+            serde_json::json!({"verifications": {"fail_fast": true}}),
+        ] {
+            let task = serde_json::json!({"context": ctx});
+            assert!(
+                verifications_policy_from_task(&task).is_none(),
+                "expected None for {ctx}"
+            );
+        }
+    }
+
+    #[test]
+    fn verifications_parses_cmd_and_default_fail_fast_false() {
+        let task = serde_json::json!({
+            "context": {"verifications": {"extra_test_cmd": "pnpm test"}}
+        });
+        let p = verifications_policy_from_task(&task).expect("policy");
+        assert_eq!(p.extra_test_cmd, "pnpm test");
+        assert!(!p.fail_fast);
+    }
+
+    #[test]
+    fn verifications_fail_fast_bool_true() {
+        let task = serde_json::json!({
+            "context": {"verifications": {
+                "extra_test_cmd": "make test",
+                "fail_fast": true
+            }}
+        });
+        let p = verifications_policy_from_task(&task).expect("policy");
+        assert!(p.fail_fast);
+    }
+
+    #[test]
+    fn verifications_fail_fast_stringy_variants() {
+        for s in ["true", "TRUE", " True ", "1", "yes", "YES"] {
+            let task = serde_json::json!({
+                "context": {"verifications": {
+                    "extra_test_cmd": "go test ./...",
+                    "fail_fast": s
+                }}
+            });
+            let p = verifications_policy_from_task(&task).expect("policy");
+            assert!(p.fail_fast, "fail_fast should be true for {s:?}");
+        }
+    }
+
+    #[test]
+    fn verifications_fail_fast_falsey_or_unexpected() {
+        for v in [
+            serde_json::json!(false),
+            serde_json::json!("false"),
+            serde_json::json!("0"),
+            serde_json::json!("maybe"),
+            serde_json::json!(null),
+            serde_json::json!(1),
+        ] {
+            let task = serde_json::json!({
+                "context": {"verifications": {
+                    "extra_test_cmd": "true",
+                    "fail_fast": v
+                }}
+            });
+            let p = verifications_policy_from_task(&task).expect("policy");
+            assert!(!p.fail_fast, "fail_fast should be false for {v}");
+        }
+    }
+
+    #[test]
+    fn verifications_trims_cmd_whitespace() {
+        let task = serde_json::json!({
+            "context": {"verifications": {"extra_test_cmd": "  pnpm test  "}}
+        });
+        let p = verifications_policy_from_task(&task).expect("policy");
+        assert_eq!(p.extra_test_cmd, "pnpm test");
+    }
+
+    #[test]
+    fn verifications_block_must_be_object() {
+        for v in [
+            serde_json::json!("pnpm test"),
+            serde_json::json!(["pnpm test"]),
+            serde_json::json!(42),
+            serde_json::json!(null),
+        ] {
+            let task = serde_json::json!({"context": {"verifications": v}});
+            assert!(
+                verifications_policy_from_task(&task).is_none(),
+                "expected None for non-object verifications {v}"
+            );
         }
     }
 

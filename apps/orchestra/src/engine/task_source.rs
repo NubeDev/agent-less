@@ -136,6 +136,13 @@ pub trait TaskSource: Send + Sync {
     /// each kind listed in `task.context.reports`.
     async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value>;
 
+    /// ADR 0002 Tier 1: record a verification outcome row. Called from the
+    /// scheduler after running `task.context.verifications.extra_test_cmd`
+    /// in the task worktree. `body` matches the API's `CreateVerification`
+    /// shape (`task_id`, `kind`, `status`, `title`, `detail`, `evidence`).
+    /// Best-effort at the call site — failures must log and continue.
+    async fn create_verification(&self, project_id: &str, body: &Value) -> Result<Value>;
+
     /// List QA items for a task, optionally filtered by status
     /// (`"resolved"`, `"pending"`, …). Used by the `qa_log` report generator.
     async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>>;

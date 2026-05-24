@@ -6,7 +6,11 @@ use tracing::{info, warn};
 use super::{GIT_NET_TIMEOUT_SECS, WorktreeManager, git_in};
 
 impl WorktreeManager {
-    pub(super) fn worktree_path(&self, task_id: &str) -> PathBuf {
+    /// Resolve the on-disk path where a task's worktree lives.
+    /// `pub` so engine-layer code (e.g. scheduler running
+    /// `context.verifications.extra_test_cmd` per ADR 0002) can execute
+    /// commands in the worktree CWD without duplicating the path logic.
+    pub fn worktree_path(&self, task_id: &str) -> PathBuf {
         self.worktree_dir
             .join(TaskId::new(task_id).worktree_dir_name())
     }

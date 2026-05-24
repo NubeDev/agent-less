@@ -499,6 +499,14 @@ impl ProjectsApi {
             .await
     }
 
+    /// ADR 0002 Tier 1: create a verification row. Wraps the existing
+    /// `POST /{project_id}/verifications` endpoint so the scheduler can
+    /// record `extra_test_cmd` outcomes without a new server-side route.
+    pub async fn create_verification(&self, project_id: &str, body: &Value) -> Result<Value> {
+        self.post(&format!("/{project_id}/verifications"), body)
+            .await
+    }
+
     pub async fn set_task_session(&self, task_id: &str, session_id: &str) -> Result<Value> {
         self.post(
             &format!("/tasks/{task_id}/session"),
@@ -916,6 +924,10 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
 
     async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value> {
         ProjectsApi::post_auto_report(self, project_id, body).await
+    }
+
+    async fn create_verification(&self, project_id: &str, body: &Value) -> Result<Value> {
+        ProjectsApi::create_verification(self, project_id, body).await
     }
 
     async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>> {

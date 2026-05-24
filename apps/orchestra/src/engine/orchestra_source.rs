@@ -403,6 +403,10 @@ impl TaskSource for OrchestraTaskSource {
         self.api.post_auto_report(project_id, body).await
     }
 
+    async fn create_verification(&self, project_id: &str, body: &Value) -> Result<Value> {
+        self.api.create_verification(project_id, body).await
+    }
+
     async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>> {
         self.api.list_qa_items_for_task(task_id, status).await
     }
