@@ -45,11 +45,15 @@ db-up:
 	fi
 	@docker rm -f diraigent-pg 2>/dev/null || true
 	docker volume create diraigent-pgdata 2>/dev/null || true
+	# Mount at /var/lib/postgresql (NOT /data). postgres:18+ images place the
+	# cluster in a major-version subdir under that path; mounting /data leaves
+	# the image's expected dir empty and the container refuses to start. See
+	# https://github.com/docker-library/postgres/issues/37 and PR #1259.
 	docker run -d --name diraigent-pg \
 		-e POSTGRES_USER=$(PG_USER) \
 		-e POSTGRES_PASSWORD=$(PG_PASS) \
 		-e POSTGRES_DB=$(PG_DB) \
-		-v diraigent-pgdata:/var/lib/postgresql/data \
+		-v diraigent-pgdata:/var/lib/postgresql \
 		-p $(PG_PORT):5432 \
 		postgres:18-alpine
 	@echo "Waiting for Postgres on port $(PG_PORT)..."

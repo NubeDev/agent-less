@@ -593,7 +593,7 @@ export class JobTheatrePage implements OnInit, OnDestroy {
     }
     if (node.kind === 'report') {
       const r = (node.ref as { report: SpReport }).report;
-      if (r.status === 'done' || r.status === 'completed') return 'done';
+      if (r.status === 'completed') return 'done';
       if (r.status === 'failed') return 'failed';
       return 'pending';
     }
@@ -829,7 +829,7 @@ export class JobTheatrePage implements OnInit, OnDestroy {
         const idx = list.findIndex(r => r.id === ev.report_id);
         if (idx >= 0) {
           const next = list.slice();
-          next[idx] = { ...next[idx], status: ev.status };
+          next[idx] = { ...next[idx], status: ev.status as SpReport['status'] };
           this.reports.set(next);
         } else {
           const t = this.task();
