@@ -505,6 +505,13 @@ impl TaskSource for LocalTaskSource {
         Ok(json!({}))
     }
 
+    async fn post_auto_report(&self, _project_id: &str, body: &Value) -> Result<Value> {
+        let kind = body["kind"].as_str().unwrap_or("unknown");
+        let task_id = body["task_id"].as_str().unwrap_or("?");
+        tracing::info!("local auto-report [{kind}] for task {task_id}");
+        Ok(json!({}))
+    }
+
     async fn list_observations(
         &self,
         _project_id: &str,

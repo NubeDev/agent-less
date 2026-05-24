@@ -727,6 +727,15 @@ pub trait DiraigentDb: Send + Sync {
     ) -> Result<i64, AppError>;
     async fn update_report(&self, id: Uuid, req: &UpdateReport) -> Result<Report, AppError>;
     async fn get_report_by_task_id(&self, task_id: Uuid) -> Result<Option<Report>, AppError>;
+    async fn create_auto_report(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        kind: &str,
+        title: &str,
+        result: &str,
+        metadata: serde_json::Value,
+    ) -> Result<Report, AppError>;
     async fn delete_report(&self, id: Uuid) -> Result<(), AppError>;
 
     // ── Task Logs ─────────────────────────────────────────────────────────────

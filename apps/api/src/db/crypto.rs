@@ -1945,6 +1945,26 @@ impl DiraigentDb for CryptoDb {
     async fn get_report_by_task_id(&self, task_id: Uuid) -> Result<Option<Report>, AppError> {
         delegate!(self, get_report_by_task_id, task_id)
     }
+    async fn create_auto_report(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        kind: &str,
+        title: &str,
+        result: &str,
+        metadata: serde_json::Value,
+    ) -> Result<Report, AppError> {
+        delegate!(
+            self,
+            create_auto_report,
+            project_id,
+            task_id,
+            kind,
+            title,
+            result,
+            metadata
+        )
+    }
     async fn delete_report(&self, id: Uuid) -> Result<(), AppError> {
         delegate!(self, delete_report, id)
     }

@@ -1305,6 +1305,18 @@ impl DiraigentDb for PostgresDb {
     async fn get_report_by_task_id(&self, task_id: Uuid) -> Result<Option<Report>, AppError> {
         repository::get_report_by_task_id(&self.0, task_id).await
     }
+    async fn create_auto_report(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        kind: &str,
+        title: &str,
+        result: &str,
+        metadata: serde_json::Value,
+    ) -> Result<Report, AppError> {
+        repository::create_auto_report(&self.0, project_id, task_id, kind, title, result, metadata)
+            .await
+    }
     async fn delete_report(&self, id: Uuid) -> Result<(), AppError> {
         repository::delete_report(&self.0, id).await
     }

@@ -130,6 +130,11 @@ pub trait TaskSource: Send + Sync {
 
     async fn post_event(&self, project_id: &str, body: &Value) -> Result<Value>;
     async fn post_observation(&self, project_id: &str, body: &Value) -> Result<Value>;
+
+    /// Attach an auto-generated report to a completed task.
+    /// Called from the `StepOutcome::AllDone` branch of the scheduler for
+    /// each kind listed in `task.context.reports`.
+    async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value>;
     async fn list_observations(
         &self,
         project_id: &str,

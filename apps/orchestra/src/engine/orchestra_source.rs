@@ -399,6 +399,10 @@ impl TaskSource for OrchestraTaskSource {
         self.api.post_observation(project_id, body).await
     }
 
+    async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value> {
+        self.api.post_auto_report(project_id, body).await
+    }
+
     async fn list_observations(
         &self,
         project_id: &str,

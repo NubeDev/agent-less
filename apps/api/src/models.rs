@@ -1735,6 +1735,21 @@ pub struct CompleteReport {
     pub status: Option<String>,
 }
 
+/// Request body for `POST /{project_id}/reports/auto`.
+///
+/// Used by the orchestra scheduler to attach a generated report (diff
+/// summary, cost breakdown, qa log, …) to a completed task on the
+/// `StepOutcome::AllDone` branch.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct CreateAutoReport {
+    pub task_id: Uuid,
+    pub kind: String,
+    pub title: String,
+    pub result: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
 // ── Task Logs ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]

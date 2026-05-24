@@ -494,6 +494,11 @@ impl ProjectsApi {
         self.post(&format!("/{project_id}/events"), body).await
     }
 
+    pub async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value> {
+        self.post(&format!("/{project_id}/reports/auto"), body)
+            .await
+    }
+
     // ── Task Log operations ────────────────────────────────────
 
     /// Upload a task execution log to the API.
@@ -899,6 +904,10 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
     }
     async fn get_work_item(&self, work_id: &str) -> Result<Value> {
         ProjectsApi::get_work_item(self, work_id).await
+    }
+
+    async fn post_auto_report(&self, project_id: &str, body: &Value) -> Result<Value> {
+        ProjectsApi::post_auto_report(self, project_id, body).await
     }
 
     async fn post_event(&self, project_id: &str, body: &Value) -> Result<Value> {

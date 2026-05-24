@@ -18,6 +18,7 @@ const RESEARCHER_PLAYBOOK_NAME: &str = "research";
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/{project_id}/reports", post(create).get(list))
+        .route("/{project_id}/reports/auto", post(create_auto))
         .route("/{project_id}/reports/{id}/complete", post(complete))
         .route("/reports/{id}", get(get_one).put(update).delete(remove))
 }
@@ -217,6 +218,52 @@ async fn remove(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /{project_id}/reports/auto`
+///
+/// Scheduler-only endpoint: attach an auto-generated report (e.g. diff
+/// summary, cost breakdown) to a completed task. The report is stored
+/// with `source='auto'` and `status='completed'`.
+async fn create_auto(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Path(project_id): Path<Uuid>,
+    Json(req): Json<CreateAutoReport>,
+) -> Result<Json<Report>, AppError> {
+    require_authority(state.db.as_ref(), agent_id, user_id, project_id, "execute").await?;
+
+    let metadata = req.metadata.unwrap_or(serde_json::json!({}));
+    let r = state
+        .db
+        .create_auto_report(
+            project_id,
+            req.task_id,
+            &req.kind,
+            &req.title,
+            &req.result,
+            metadata,
+        )
+        .await?;
+
+    state.fire_event(
+        project_id,
+        "report.created",
+        "report",
+        r.id,
+        agent_id,
+        Some(user_id),
+        serde_json::json!({
+            "report_id": r.id,
+            "title": r.title,
+            "kind": r.kind,
+            "source": "auto",
+            "task_id": req.task_id,
+        }),
+    );
+
+    Ok(Json(r))
 }
 
 /// `POST /{project_id}/reports/{id}/complete`
