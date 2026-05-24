@@ -347,6 +347,173 @@ producing a diff.
 
 ---
 
+## SoW-9 — Job Theatre fidelity pass
+
+**One-line:** make `/jobs/:taskId` actually look and behave like the
+[mockup](#job-theatre--page-mockup) — a *pipeline* you can read at a
+glance, not a single rectangle on an empty canvas.
+
+### Why this exists
+
+The MVP (`5a07041` + 3 follow-ups) shipped a working DAG renderer, SSE
+live-updates, a Files tab with text diff, and a timeline scrub. What it
+does NOT yet do:
+
+1. **Look like a pipeline.** Single-step playbooks (the common case)
+   render as one step node + maybe one report. The mockup promised
+   `task → plan → design → impl → test → verify → merge` with QA
+   branches. Today's orchestra emits one `implement` log per task, so
+   even with full data flowing you see ~3 nodes.
+2. **Show verify + merge as distinct nodes.** The graph has only
+   `task | step | qa | report` kinds. Verifications and the merge
+   commit are silently folded into the task's terminal state.
+3. **Action bar.** No `Cancel / Pause / Open worktree / Re-run from
+   step ▾` controls. Operator must leave the page to do anything.
+4. **Rich Prompt tab.** Mockup showed collapsible `system / context /
+   user / overrides`. Today's tab is a single `<pre>` of the rendered
+   prompt.
+5. **Monaco diff.** Files tab uses a hand-rolled text renderer; spec
+   called for `monaco-editor` inline diff (per-step baseline → after).
+6. **Files-tab affordances.** No `blame` / `open in worktree` /
+   `revert this step's changes to file` buttons.
+7. **QA tab AI affordances.** No confidence display, no accept-check
+   countdown, no `Accept / Override / Escalate` buttons.
+8. **Empty-state polish.** "No job selected" placeholder + skeleton
+   "loading flow…" missing.
+
+### Phasing (each phase is a separate SoW-9 sub-PR)
+
+#### Phase A — Synthesised verify + merge nodes  (UI-only, ~1 day)
+
+The data already tells us whether a task verified (`completed_at` set
++ no failure) and whether it merged (`task_changed_file` rows exist).
+Synthesise the nodes client-side. No new API.
+
+- **Build.**
+  - Extend `NodeKind = 'task' | 'step' | 'qa' | 'report' | 'verify' | 'merge'`.
+  - `nodes()` appends `verify` after the last step when the task has
+    `completed_at OR state=='failed'`. Status maps task.state →
+    `done | failed | pending`.
+  - `nodes()` appends `merge` after `verify` when the task has any
+    `task_changed_file` rows (re-use the existing `filesByStep` data)
+    OR audit shows a merge-related transition. Status: `done` if any
+    files merged, `failed` if task is failed, `pending` otherwise.
+  - `edges()` chain becomes `… last_step → verify → merge → report`.
+  - `nodeStatus()` + `statusAt()` learn the two new kinds (pure
+    derivation from task + files signals already in memory).
+  - Drawer Overview tab for the two new kinds shows:
+    - `verify` — task.context.test_cmd, last verification row if any,
+      pass/fail timestamp.
+    - `merge` — branch name (`agent/task-<short_id>`),
+      target = task.project.default_branch, file count.
+- **Tests.** Unit tests on a pure helper `synthTailNodes(task, files,
+  audit) -> { verify: JobNode|null, merge: JobNode|null }` covering:
+  pending task → both null; completed + no diff → verify done, merge
+  null; completed + diff → both done; failed task → verify failed,
+  merge null; cancelled → neither.
+
+**Exit:** open `/jobs/<id>` for a merged completed task and see
+`task → implement → verify ✓ → merge ✓` chained left-to-right, plus
+any QA / report branches.
+
+#### Phase B — Multi-step playbook in the demo  (~½ day)
+
+Ship a `.diraigent/playbooks/standard.yaml` in the throwaway repo +
+update `scripts/throwaway-demo.sh` to set `playbook_name=standard` on
+the seed task. This is the only thing standing between "1 step node"
+and "4 step nodes" for new operators.
+
+- **Build.**
+  - `scripts/throwaway-demo/playbooks/standard.yaml` — copied into the
+    demo repo on each run: 3 steps (`plan`, `implement`, `verify`)
+    chaining to `merge_to_default`. Use existing `step_template`
+    rows (`scope`, `implement`, `review`) for budgets.
+  - `scripts/throwaway-demo.sh` — `cp` the playbook into the repo's
+    `.diraigent/playbooks/` before `git init`; task payload picks up
+    `"playbook_name": "standard"`.
+- **Tests.** Run the demo, watch orchestra log:
+  `step=plan` → `step=implement` → `step=verify` over 3 worker
+  invocations; assert 3 distinct `task_log` rows post-completion.
+
+**Exit:** new operator running `./scripts/throwaway-demo.sh` sees a
+3-step pipeline on first task render.
+
+#### Phase C — Action bar + drawer polish  (~1 day)
+
+The "what can I do from here?" controls.
+
+- **Header.** `[ Cancel ] [ Open worktree ] [ Re-run from step ▾ ]`
+  using existing endpoints: `POST /v1/tasks/{id}/transition`
+  (cancelled), `task.context.preserve_worktree`-aware path probe,
+  `POST /v1/tasks` clone-with-overrides for re-run. `Pause` is
+  deferred — orchestra has no pause primitive today.
+- **Prompt tab.** Parse the rendered prompt into 4 collapsible
+  sections by anchor markers (`==== SYSTEM ====`, `==== CONTEXT ====`,
+  etc.) that `engine/prompt.rs` already emits. Add `[copy raw]`.
+- **QA tab.** Read `metadata.ai_confidence` (set by SoW-2 worker per
+  commit b1a8f2c). Render bar + threshold marker. Add
+  `[ Accept ] [ Override ] [ Escalate ]` wired to existing
+  `POST /v1/qa/{id}/answer` + `POST /v1/qa/{id}/escalate`.
+- **Tests.** Component spec per affordance: cancel transitions task,
+  re-run posts clone, override+escalate hit the right endpoints with
+  the right payloads.
+
+**Exit:** operator can drive a job from the page without leaving it.
+
+#### Phase D — Monaco inline diff  (~1 day)
+
+Replace the text diff in the Files tab with `monaco-editor`'s
+`createDiffEditor`. Already a transitive dep via Angular.
+
+- **Build.**
+  - Lazy-load monaco via `import('monaco-editor')` (it's big).
+  - `createDiffEditor` on a `<div>` inside the drawer, render
+    `(before_text, after_text)` pulled from
+    `GET /v1/tasks/{id}/changed-files/{file_id}` (returns both sides
+    when `store_diffs=true`).
+  - Theme: bind to `light_mode` signal; switch monaco theme.
+- **Tests.** Playwright e2e: open a task with `store_diffs=true`,
+  click a file, assert monaco editor renders with two columns.
+
+**Exit:** clicking a file shows a real two-pane diff.
+
+#### Phase E — Empty / loading / failed states  (~½ day)
+
+Three small components matching the mockup's bottom row.
+
+- "no job selected" — only reachable if route param is missing
+  (defensive); link back to `/quick`.
+- "loading flow…" — skeleton placeholders matching node shapes
+  during the initial `forkJoin`.
+- "step failed" — when `task.state == 'failed'`, render a banner
+  above the graph with exit code + `[ open logs ]` deep-link to
+  the failed step's drawer Logs tab.
+
+**Tests.** Component spec per state.
+
+**Exit:** no more "blank canvas" — every load state has visible
+feedback.
+
+### Definition of done (whole SoW-9)
+
+- Operator opens `/jobs/<id>` for any task and immediately understands
+  what phase of the pipeline they're looking at.
+- Mockup gap-analysis table in `apps/web/src/app/features/jobs/README.md`
+  has every row ticked ✅.
+- One e2e test per phase exit criterion, all green in CI.
+
+### Not in scope
+
+- Re-architecting the orchestra to add real `plan`/`design`/`test`
+  step kinds beyond what `step_template` already offers.
+- Backend audit-log enrichment (separate "merge" event rows etc.).
+  Phase A derives merge-state from existing signals; if that proves
+  too fuzzy, a follow-up SoW adds an explicit `task_event.kind='merge'`.
+- Live editor for prompts (the `[ open in playground ]` button in the
+  mockup is aspirational — no playground exists yet).
+
+---
+
 ## Deferred (Tier 3)
 
 - **SoW-6: MCP `ask` tool.** Requires orchestra to become an MCP host

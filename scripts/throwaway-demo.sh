@@ -62,6 +62,58 @@ fn main() {
     println!("hi");
 }
 RS
+  # Drop in a multi-step playbook so the Job Theatre renders a real
+  # pipeline (plan → implement → review) instead of a single node.
+  mkdir -p .diraigent/playbooks
+  cat > .diraigent/playbooks/demo.yaml <<'YAML'
+title: Demo Lifecycle
+trigger_description: "plan → implement → review"
+initial_state: ready
+tags: [demo]
+metadata:
+  git_strategy: merge_to_default
+steps:
+  - name: plan
+    budget: 2.0
+    allowed_tools: readonly
+    context_level: minimal
+    on_complete: next
+    description: |
+      ## Your Job: PLAN
+      1. `{{agent_cli}} task {{task_id}}` — read the spec.
+      2. `{{agent_cli}} claim {{task_id}}`
+      3. Post a 3–5 bullet plan via `{{agent_cli}} artifact {{task_id}} "PLAN: …"`.
+      4. `{{agent_cli}} transition {{task_id}} done`
+      **Rules**: Do NOT write code. Do NOT modify files.
+  - name: implement
+    budget: 8.0
+    allowed_tools: full
+    context_level: full
+    on_complete: next
+    description: |
+      ## Your Job: IMPLEMENT
+      1. `{{agent_cli}} task {{task_id}}` — read the spec + the prior PLAN artifact.
+      2. `{{agent_cli}} claim {{task_id}}`
+      3. Implement the code as the spec + plan dictate.
+      4. Run the task's `test_cmd` if set; iterate until green (max 3 retries).
+      5. `{{agent_cli}} artifact {{task_id}} "test output"`
+      6. `{{agent_cli}} transition {{task_id}} done`
+      **Rules**: Do NOT run `git push`. Stay in your worktree.
+  - name: review
+    budget: 3.0
+    allowed_tools: readonly
+    context_level: minimal
+    on_complete: next
+    description: |
+      ## Your Job: REVIEW
+      1. `{{agent_cli}} task {{task_id}}`
+      2. `{{agent_cli}} claim {{task_id}}`
+      3. `git diff {{project.default_branch}}...HEAD` — inspect.
+      4. Post `{{agent_cli}} artifact {{task_id}} "REVIEW: <findings>"`.
+      5. APPROVED → `{{agent_cli}} transition {{task_id}} done`.
+         CHANGES → `{{agent_cli}} blocker {{task_id}} "<what>"` then `transition ready`.
+      **Rules**: Do NOT modify code. Cite file:line in findings.
+YAML
   git add .
   git commit -q -m 'init'
 )
@@ -82,7 +134,8 @@ if [ -z "$PROJ" ]; then
     \"description\":\"local throwaway demo\",
     \"repo_url\":\"$REPO_URL\",
     \"default_branch\":\"main\",
-    \"git_mode\":\"standalone\"
+    \"git_mode\":\"standalone\",
+    \"metadata\":{\"upload_logs\":true,\"store_diffs\":true}
   }" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
   echo "    project: $PROJ (created)"
 else
@@ -152,6 +205,7 @@ echo "==> creating demo task"
 TASK=$(curl -sf -X POST "$API/$PROJ/tasks" "${H_DEV[@]}" -d '{
   "title":"Add a greet() function",
   "kind":"feature",
+  "playbook_name":"demo",
   "context":{
     "spec":"Add fn greet(name: &str) -> String to main.rs that returns \"Hello, <name>!\". Call it from main with name = \"world\".",
     "files":["main.rs"],

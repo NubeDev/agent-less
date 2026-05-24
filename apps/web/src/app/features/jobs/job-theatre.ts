@@ -22,7 +22,26 @@ import {
 } from './jobs-api.service';
 import { TaskStreamEvent, TaskStreamService } from './task-stream.service';
 
-type NodeKind = 'task' | 'step' | 'qa' | 'report';
+type NodeKind = 'task' | 'step' | 'qa' | 'report' | 'verify' | 'merge';
+
+interface VerifyInfo {
+  /** test_cmd from task.context if present. */
+  test_cmd: string | null;
+  /** Status derived from task.state: 'done' (task done), 'failed', or 'pending'. */
+  status: 'done' | 'failed' | 'pending';
+  /** Best-guess timestamp for when verify resolved (task.completed_at). */
+  resolved_at: string | null;
+}
+
+interface MergeInfo {
+  /** agent/task-<short_id>. */
+  branch: string;
+  /** Task's project default_branch, when known; otherwise 'main'. */
+  target: string;
+  /** Number of merged files (sum of files across step groups). */
+  file_count: number;
+  status: 'done' | 'failed' | 'pending';
+}
 
 interface JobNode extends Node {
   kind: NodeKind;
@@ -31,7 +50,51 @@ interface JobNode extends Node {
     | { kind: 'task'; task: SpTask }
     | { kind: 'step'; step_name: string; logs: TaskLogSummary[] }
     | { kind: 'qa'; qa: SpQaItem }
-    | { kind: 'report'; report: SpReport };
+    | { kind: 'report'; report: SpReport }
+    | { kind: 'verify'; info: VerifyInfo }
+    | { kind: 'merge'; info: MergeInfo };
+}
+
+/**
+ * Pure helper: derive synthetic `verify` and `merge` tail nodes from
+ * task state + file groups already in memory. Returns null entries
+ * when the corresponding stage should not appear in the graph.
+ *
+ * Verify appears when the task has reached a terminal state
+ * (completed_at set, or state == 'failed' / 'cancelled').
+ * Merge appears when verify is present AND the task has any
+ * changed files OR the task is in 'done' state (the orchestra only
+ * marks a task done after a merge attempt succeeds).
+ */
+export function synthTailNodes(
+  task: SpTask,
+  filesByStep: StepFileGroup[],
+): { verify: VerifyInfo | null; merge: MergeInfo | null } {
+  const isTerminal = !!task.completed_at || task.state === 'failed' || task.state === 'cancelled';
+  if (!isTerminal) return { verify: null, merge: null };
+  const ctx = (task.context ?? {}) as Record<string, unknown>;
+  const testCmd = typeof ctx['test_cmd'] === 'string' ? (ctx['test_cmd'] as string) : null;
+  const verifyStatus: VerifyInfo['status'] =
+    task.state === 'failed' || task.state === 'cancelled' ? 'failed' :
+    task.state === 'done' ? 'done' : 'pending';
+  const verify: VerifyInfo = {
+    test_cmd: testCmd,
+    status: verifyStatus,
+    resolved_at: task.completed_at ?? null,
+  };
+  const fileCount = filesByStep.reduce((acc, g) => acc + g.files.length, 0);
+  const shouldShowMerge = task.state === 'done' || fileCount > 0;
+  if (!shouldShowMerge) return { verify, merge: null };
+  const shortId = task.id.split('-')[0] + '-' + (task.id.split('-')[1] ?? '').slice(0, 3);
+  const merge: MergeInfo = {
+    branch: `agent/task-${shortId}`,
+    target: 'main',
+    file_count: fileCount,
+    status:
+      task.state === 'failed' || task.state === 'cancelled' ? 'failed' :
+      task.state === 'done' ? 'done' : 'pending',
+  };
+  return { verify, merge };
 }
 
 type DrawerTab = 'overview' | 'prompt' | 'output' | 'logs' | 'audit' | 'files';
@@ -89,6 +152,8 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
     .node-rect.step { fill: #1e1e2e; stroke: #89b4fa; }
     .node-rect.qa { fill: #1e1e2e; stroke: #f9e2af; }
     .node-rect.report { fill: #1e1e2e; stroke: #a6e3a1; }
+    .node-rect.verify { fill: #1e1e2e; stroke: #94e2d5; }
+    .node-rect.merge { fill: #1e1e2e; stroke: #f5c2e7; }
     .node-rect.selected { stroke-width: 3; }
     /* Live status colour overlay — applied via data-status to keep the
        dagre layout stable (no DOM structure change on update). */
@@ -365,6 +430,28 @@ export class JobTheatrePage implements OnInit, OnDestroy {
         data: {},
       } as JobNode);
     }
+    // Synthesised tail: verify + merge derived from task state + files.
+    const tail = synthTailNodes(t, this.filesByStep());
+    if (tail.verify) {
+      out.push({
+        id: 'verify:' + t.id,
+        label: 'verify',
+        kind: 'verify',
+        ref: { kind: 'verify', info: tail.verify },
+        dimension: { width: 160, height: 56 },
+        data: {},
+      } as JobNode);
+    }
+    if (tail.merge) {
+      out.push({
+        id: 'merge:' + t.id,
+        label: `merge → ${tail.merge.target}`,
+        kind: 'merge',
+        ref: { kind: 'merge', info: tail.merge },
+        dimension: { width: 200, height: 56 },
+        data: {},
+      } as JobNode);
+    }
     for (const r of this.reports()) {
       out.push({
         id: 'report:' + r.id,
@@ -384,22 +471,38 @@ export class JobTheatrePage implements OnInit, OnDestroy {
     const task = ns[0];
     const links: Edge[] = [];
     const steps = ns.filter(n => n.kind === 'step');
+    const verify = ns.find(n => n.kind === 'verify') ?? null;
+    const merge = ns.find(n => n.kind === 'merge') ?? null;
     // task -> first step; step -> next step
     if (steps.length > 0) {
       links.push({ id: 'e-task-' + steps[0].id, source: task.id, target: steps[0].id });
       for (let i = 0; i < steps.length - 1; i++) {
         links.push({ id: `e-${steps[i].id}-${steps[i + 1].id}`, source: steps[i].id, target: steps[i + 1].id });
       }
+    } else if (verify) {
+      // No step logs but we still synthed verify (e.g. task done with upload_logs=false).
+      links.push({ id: 'e-task-' + verify.id, source: task.id, target: verify.id });
     }
-    // attach QA + report nodes to matching step (by step_name) or to task as fallback
+    // last_step -> verify -> merge (when present).
+    const lastStep = steps[steps.length - 1] ?? null;
+    if (verify && lastStep) {
+      links.push({ id: `e-${lastStep.id}-${verify.id}`, source: lastStep.id, target: verify.id });
+    }
+    if (merge && verify) {
+      links.push({ id: `e-${verify.id}-${merge.id}`, source: verify.id, target: merge.id });
+    } else if (merge && lastStep) {
+      links.push({ id: `e-${lastStep.id}-${merge.id}`, source: lastStep.id, target: merge.id });
+    }
+    // attach QA + report nodes to matching step (by step_name) or to task as fallback.
+    // Reports prefer the merge node when present (post-pipeline artefact), else last step.
     const stepByName = new Map(steps.map(s => [(s.ref as { step_name: string }).step_name, s]));
+    const reportParent = merge ?? verify ?? lastStep ?? task;
     for (const n of ns) {
       if (n.kind === 'qa') {
         const parent = stepByName.get((n.ref as { qa: SpQaItem }).qa.step_name) ?? task;
         links.push({ id: `e-${parent.id}-${n.id}`, source: parent.id, target: n.id });
       } else if (n.kind === 'report') {
-        const parent = steps[steps.length - 1] ?? task;
-        links.push({ id: `e-${parent.id}-${n.id}`, source: parent.id, target: n.id });
+        links.push({ id: `e-${reportParent.id}-${n.id}`, source: reportParent.id, target: n.id });
       }
     }
     return links;
@@ -476,6 +579,25 @@ export class JobTheatrePage implements OnInit, OnDestroy {
         ['Kind', r.kind],
         ['Status', r.status],
         ['Created', r.created_at],
+      ];
+    }
+    if (sel.ref.kind === 'verify') {
+      const v = sel.ref.info;
+      return [
+        ['Phase', 'verify'],
+        ['Status', v.status],
+        ['Test command', v.test_cmd ?? '— (no test_cmd in task.context)'],
+        ['Resolved', v.resolved_at ?? '—'],
+      ];
+    }
+    if (sel.ref.kind === 'merge') {
+      const m = sel.ref.info;
+      return [
+        ['Phase', 'merge'],
+        ['Status', m.status],
+        ['Branch', m.branch],
+        ['Target', m.target],
+        ['Files merged', String(m.file_count)],
       ];
     }
     return [];
@@ -605,6 +727,9 @@ export class JobTheatrePage implements OnInit, OnDestroy {
       const steps = this.nodes().filter(n => n.kind === 'step');
       const isLast = steps.length > 0 && steps[steps.length - 1].id === node.id;
       return taskRunning && isLast ? 'running' : 'done';
+    }
+    if (node.kind === 'verify' || node.kind === 'merge') {
+      return (node.ref as { info: { status: 'done' | 'failed' | 'pending' } }).info.status;
     }
     return 'pending';
   }
@@ -781,6 +906,14 @@ export class JobTheatrePage implements OnInit, OnDestroy {
       if (t >= updated && r.status === 'completed') return 'done';
       if (t >= updated && r.status === 'failed') return 'failed';
       return 'pending';
+    }
+    if (node.kind === 'verify' || node.kind === 'merge') {
+      // Synthetic tail nodes resolve when the task does. Pre-resolution: pending.
+      const task = this.task();
+      if (!task) return 'pending';
+      const completed = task.completed_at ? new Date(task.completed_at).getTime() : null;
+      if (completed === null || t < completed) return 'pending';
+      return (node.ref as { info: { status: 'done' | 'failed' | 'pending' } }).info.status;
     }
     return 'pending';
   }
