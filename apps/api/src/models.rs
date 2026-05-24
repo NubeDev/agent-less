@@ -102,7 +102,7 @@ pub const MEMBERSHIP_STATUSES: &[&str] = &["active", "inactive", "suspended"];
 
 // ── State Machine (re-exported from shared crate) ──
 pub use diraigent_types::state_machine::{
-    can_transition, is_lifecycle_state, is_wait_state, wait_target,
+    can_transition, is_lifecycle_state, is_review_state, is_wait_state, wait_target,
 };
 
 // ── Domain Models ──

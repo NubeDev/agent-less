@@ -145,6 +145,7 @@ async fn answer(
     //    the task is no longer in a review state.
     let _ = state.review_tx.send(crate::ReviewSseEvent {
         kind: "left".to_string(),
+        state: Some(old_state.clone()),
         project_id: transitioned.project_id,
         task_id: transitioned.id,
         title: transitioned.title.clone(),

@@ -72,13 +72,23 @@ impl SseTicketStore {
     }
 }
 
-/// Notification broadcast when a task enters or leaves `human_review`.
+/// Notification broadcast when a task enters or leaves a review state.
 /// Used to drive the SSE review stream.
+///
+/// `state` carries the review state being entered/left so the client can
+/// distinguish `human_review` (existing) from `ai_review` (SoW-1). For
+/// backwards compatibility older clients can ignore the field.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ReviewSseEvent {
-    /// `"entered"` when a task transitions **to** human_review;
-    /// `"left"` when it transitions **away** from human_review.
+    /// `"entered"` when a task transitions **into** a review state;
+    /// `"left"` when it transitions **away** from one.
     pub kind: String,
+    /// The review state involved (`"human_review"` or `"ai_review"`).
+    /// On a state-to-state escalation (e.g. ai_review → human_review) the
+    /// broadcaster emits two events: one `left` for the old state, one
+    /// `entered` for the new state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
     pub project_id: Uuid,
     pub task_id: Uuid,
     pub title: String,

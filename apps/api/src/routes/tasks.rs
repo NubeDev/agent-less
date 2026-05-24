@@ -512,15 +512,39 @@ async fn transition_task(
         serde_json::json!({"task_id": task.id, "title": task.title, "from": old_state, "to": task.state}),
     );
 
-    // Notify SSE review stream when a task enters or leaves human_review.
-    if task.state == "human_review" || old_state == "human_review" {
-        let kind = if task.state == "human_review" {
-            "entered"
-        } else {
-            "left"
-        };
+    // Notify SSE review stream when a task enters or leaves a review state
+    // (human_review or ai_review). On an escalation (review → review) emit
+    // both a `left` for the old state and an `entered` for the new state.
+    let was_review = is_review_state(&old_state);
+    let now_review = is_review_state(&task.state);
+    if was_review && !now_review {
         let _ = state.review_tx.send(crate::ReviewSseEvent {
-            kind: kind.to_string(),
+            kind: "left".to_string(),
+            state: Some(old_state.clone()),
+            project_id: task.project_id,
+            task_id: task.id,
+            title: task.title.clone(),
+        });
+    } else if !was_review && now_review {
+        let _ = state.review_tx.send(crate::ReviewSseEvent {
+            kind: "entered".to_string(),
+            state: Some(task.state.clone()),
+            project_id: task.project_id,
+            task_id: task.id,
+            title: task.title.clone(),
+        });
+    } else if was_review && now_review && old_state != task.state {
+        // Escalation between review states.
+        let _ = state.review_tx.send(crate::ReviewSseEvent {
+            kind: "left".to_string(),
+            state: Some(old_state.clone()),
+            project_id: task.project_id,
+            task_id: task.id,
+            title: task.title.clone(),
+        });
+        let _ = state.review_tx.send(crate::ReviewSseEvent {
+            kind: "entered".to_string(),
+            state: Some(task.state.clone()),
             project_id: task.project_id,
             task_id: task.id,
             title: task.title.clone(),
