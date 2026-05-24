@@ -56,7 +56,7 @@ async fn create(
                -d '{{\"result\": \"<your markdown result>\", \"status\": \"completed\"}}'\n\
              ```\n\
              Replace $API_BASE, $AUTH_HEADER, and $AGENT_ID with the values from your environment.",
-            r.title, r.kind, r.prompt, project_id, r.id
+            r.title, r.kind, r.prompt.as_deref().unwrap_or(""), project_id, r.id
         ),
         "report_id": r.id.to_string(),
         "notes": format!("This task was auto-created for report {}. Post results to POST /{}/reports/{}/complete", r.id, project_id, r.id),

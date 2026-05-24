@@ -100,6 +100,35 @@ pub async fn get_report_by_task_id(
     Ok(report)
 }
 
+/// Insert an auto-emitted report (scheduler-generated, attached to a completed
+/// task). Has no prompt or human creator; `source` is fixed to `"auto"` and
+/// `status` to `"completed"` because the result is generated synchronously.
+pub async fn create_auto_report(
+    pool: &PgPool,
+    project_id: Uuid,
+    task_id: Uuid,
+    kind: &str,
+    title: &str,
+    result: &str,
+    metadata: serde_json::Value,
+) -> Result<Report, AppError> {
+    let r = sqlx::query_as::<_, Report>(
+        "INSERT INTO diraigent.report
+         (project_id, title, kind, status, result, task_id, metadata, source)
+         VALUES ($1, $2, $3, 'completed', $4, $5, $6, 'auto') RETURNING *",
+    )
+    .bind(project_id)
+    .bind(title)
+    .bind(kind)
+    .bind(result)
+    .bind(task_id)
+    .bind(&metadata)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(r)
+}
+
 pub async fn delete_report(pool: &PgPool, id: Uuid) -> Result<(), AppError> {
     delete_by_id(pool, Table::Report, id, "Report not found").await
 }
