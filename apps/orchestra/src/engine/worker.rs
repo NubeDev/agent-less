@@ -93,6 +93,46 @@ async fn handle_qa_sentinels(
     true
 }
 
+/// Persist any `HANDOVER[<nonce>]` blocks found in the agent's log as
+/// `task_update` rows of kind `handover` (SoW-3). The next step's prompt
+/// builder loads the most recent handover and prepends it so successive
+/// steps do not re-derive prior decisions from the worktree.
+///
+/// Wrong-nonce or unterminated blocks are silently dropped by the
+/// parser. Multiple blocks per log are persisted as separate rows in
+/// emission order (loader picks the latest). Returns the count of
+/// handovers persisted (mostly for tests / logging).
+async fn persist_handovers(
+    api: &dyn TaskSource,
+    tid: &TaskId,
+    task_id: &str,
+    step_name: &str,
+    log_text: &str,
+    nonce: &str,
+) -> usize {
+    let parsed = crate::providers::sentinel::parse(log_text, nonce);
+    if parsed.handovers.is_empty() {
+        return 0;
+    }
+    info!(
+        "worker {tid}: agent emitted {} handover block(s)",
+        parsed.handovers.len()
+    );
+    let mut persisted = 0usize;
+    for h in &parsed.handovers {
+        // Tag the body with the source step so the next step's prompt
+        // can render `## Handover from <step_name>` accurately even when
+        // the loader only sees the row content.
+        let body = format!("from_step: {step_name}\n\n{}", h.body);
+        if let Err(e) = api.post_task_update(task_id, "handover", &body).await {
+            warn!("worker {tid}: failed to persist handover: {e:#}");
+            continue;
+        }
+        persisted += 1;
+    }
+    persisted
+}
+
 /// Read-only tools for review and dream steps (no code modification).
 const TOOLS_READONLY: &[&str] = &["Bash(*)", "Read", "Glob", "Grep", "WebFetch", "WebSearch"];
 
@@ -396,6 +436,20 @@ pub async fn run_worker(
     .await;
     // ──────────────────────────────────────────────────────────────────
     let _ = sentinel_triggered;
+
+    // ── SoW-3 handover persistence ────────────────────────────────────
+    // Independent of QA handling: even when the agent finished cleanly
+    // we want a structured close-out for the next step's prompt.
+    let _ = persist_handovers(
+        api,
+        &tid,
+        task_id,
+        &step_config.step_name,
+        &log_text,
+        &sentinel_nonce,
+    )
+    .await;
+    // ──────────────────────────────────────────────────────────────────
 
     // Collect and post changed files when store_diffs is enabled in project metadata.
     if store_diffs {
@@ -1452,5 +1506,50 @@ mod tests {
         .await;
         assert!(triggered);
         // wiremock verifies expect(1) on /qa on Drop.
+    }
+
+    // ── SoW-3: persist_handovers tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn persist_handovers_writes_task_update_row() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-1/updates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "tu-1", "kind": "handover"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let nonce = "cafebabe";
+        let log = format!("HANDOVER[{nonce}]: implemented foo\nbar baz\nHANDOVER_END[{nonce}]\n");
+        let n = persist_handovers(&api, &tid, "task-1", "implement", &log, nonce).await;
+        assert_eq!(n, 1);
+        // wiremock verifies the POST happened on Drop.
+    }
+
+    #[tokio::test]
+    async fn persist_handovers_noop_when_log_has_none() {
+        // No mocks: any HTTP call would 404 and wiremock would later
+        // complain (no expect was set, but `panic_on_unmounted` is the
+        // default for unmatched on Drop only for `.expect`s). The real
+        // assertion is the returned count.
+        let server = MockServer::start().await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let n = persist_handovers(&api, &tid, "task-1", "implement", "no sentinel here", "x").await;
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn persist_handovers_wrong_nonce_is_dropped() {
+        let server = MockServer::start().await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let log = "HANDOVER[wrong]: pwned\nHANDOVER_END[wrong]\n";
+        let n = persist_handovers(&api, &tid, "task-1", "implement", log, "right").await;
+        assert_eq!(n, 0);
     }
 }

@@ -178,6 +178,12 @@ pub async fn build_user_prompt(
     let task_updates = updates_res.unwrap_or_default();
     let verifications = verifications_res.unwrap_or_default();
 
+    // SoW-3: render the most recent `handover` task_update (if any) so the
+    // next step's agent picks up where the previous one left off without
+    // re-deriving prior decisions from the worktree. The worker writes
+    // these as `kind: "handover"` rows tagged with `from_step: <name>`.
+    let handover_section = latest_handover_section(&task_updates);
+
     let current_playbook_name = task_json
         .as_ref()
         .and_then(|t| t["playbook_name"].as_str())
@@ -415,7 +421,7 @@ pub async fn build_user_prompt(
 
 ## Active Work
 {work_section}
-{related_context}{generated_context}## Task Discussion (comments & feedback from humans — follow these instructions)
+{handover_section}{related_context}{generated_context}## Task Discussion (comments & feedback from humans — follow these instructions)
 {task_spec_inline}{discussion}
 {workflow}
 
@@ -1078,6 +1084,69 @@ fn extract_review_feedback(
 
 fn read_file_or_empty(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// SoW-3: render the most recent `handover` task_update as a markdown
+/// section the next step's agent will read before forming a plan.
+///
+/// Body format produced by the worker:
+///
+/// ```text
+/// from_step: implement
+///
+/// <agent's free-form handover text>
+/// ```
+///
+/// The leading `from_step:` line is stripped from the rendered body and
+/// used in the section header. Returns the empty string when no handover
+/// row exists (so the prompt template can interpolate without an
+/// orphaned heading).
+fn latest_handover_section(task_updates: &[serde_json::Value]) -> String {
+    // `task_updates` arrives newest-last (creation order). Walk in
+    // reverse so we stop at the first handover we find.
+    let latest = task_updates
+        .iter()
+        .rev()
+        .find(|u| u["kind"].as_str() == Some("handover"));
+    let Some(row) = latest else {
+        return String::new();
+    };
+    let raw = row["content"].as_str().unwrap_or("").trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let (from_step, body) = parse_handover_body(raw);
+    let from = from_step.unwrap_or_else(|| "previous step".to_string());
+    format!(
+        "## Handover from {from}\n\
+         \n\
+         The previous step closed with this structured handover. Read it before \
+         planning your work — it captures decisions, deferred items, and context \
+         the worktree alone does not surface.\n\
+         \n\
+         {body}\n\
+         \n",
+    )
+}
+
+/// Split a stored handover body into `(from_step, remainder)`.
+/// Tolerant: any of `from_step:` / `From_step:` / `FROM_STEP:` is accepted.
+fn parse_handover_body(raw: &str) -> (Option<String>, String) {
+    let mut lines = raw.lines();
+    let first = lines.next().unwrap_or("").trim();
+    if let Some(rest) = first
+        .strip_prefix("from_step:")
+        .or_else(|| first.strip_prefix("From_step:"))
+        .or_else(|| first.strip_prefix("FROM_STEP:"))
+    {
+        let from = rest.trim().to_string();
+        // Skip the (optional) blank separator line.
+        let body: Vec<&str> = lines.collect();
+        let trimmed = body.join("\n").trim_start_matches('\n').to_string();
+        let from_opt = if from.is_empty() { None } else { Some(from) };
+        return (from_opt, trimmed);
+    }
+    (None, raw.to_string())
 }
 
 #[cfg(test)]
@@ -1954,5 +2023,60 @@ mod tests {
             output.contains("Create subtask with work: gggggggg-hhhh-iiii-jjjj-kkkkkkkkkkkk"),
             "{{{{work_id}}}} template variable should be substituted, got: {output}"
         );
+    }
+
+    // ── SoW-3 handover rendering tests ──────────────────────
+
+    fn handover_row(content: &str) -> serde_json::Value {
+        serde_json::json!({"kind": "handover", "content": content})
+    }
+
+    #[test]
+    fn latest_handover_section_empty_when_no_rows() {
+        assert_eq!(latest_handover_section(&[]), "");
+    }
+
+    #[test]
+    fn latest_handover_section_empty_when_only_other_kinds() {
+        let rows = vec![
+            serde_json::json!({"kind": "progress", "content": "did stuff"}),
+            serde_json::json!({"kind": "note", "content": "hmm"}),
+        ];
+        assert_eq!(latest_handover_section(&rows), "");
+    }
+
+    #[test]
+    fn latest_handover_section_picks_most_recent() {
+        let rows = vec![
+            handover_row("from_step: implement\n\nfirst handover"),
+            serde_json::json!({"kind": "progress", "content": "moved on"}),
+            handover_row("from_step: review\n\nsecond handover wins"),
+        ];
+        let out = latest_handover_section(&rows);
+        assert!(out.contains("## Handover from review"), "got: {out}");
+        assert!(out.contains("second handover wins"));
+        assert!(!out.contains("first handover"));
+    }
+
+    #[test]
+    fn latest_handover_section_falls_back_to_generic_header_when_untagged() {
+        let rows = vec![handover_row("body without prefix")];
+        let out = latest_handover_section(&rows);
+        assert!(out.contains("## Handover from previous step"), "got: {out}");
+        assert!(out.contains("body without prefix"));
+    }
+
+    #[test]
+    fn parse_handover_body_extracts_from_step() {
+        let (from, body) = parse_handover_body("from_step: implement\n\nhello world");
+        assert_eq!(from.as_deref(), Some("implement"));
+        assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn parse_handover_body_handles_untagged() {
+        let (from, body) = parse_handover_body("just a body");
+        assert_eq!(from, None);
+        assert_eq!(body, "just a body");
     }
 }

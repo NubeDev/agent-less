@@ -143,3 +143,38 @@ async fn qa_answer_rejects_invalid_transition() {
 
     app.cleanup().await;
 }
+
+/// SoW-3: the `handover` kind must be accepted by the
+/// `task_update_kind_check` CHECK constraint added in migration 048.
+/// This test exists primarily as a smoke check that the migration ran
+/// and that downstream readers (e.g. the orchestra prompt builder) can
+/// observe handover rows alongside other task_update kinds.
+#[tokio::test]
+async fn task_update_accepts_handover_kind() {
+    let app = require_db!();
+    let project_id = app.create_project("handover-kind").await;
+    let task = app.create_task(project_id, "handover smoke").await;
+    let task_id: uuid::Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+    let id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_update (task_id, kind, content)
+         VALUES ($1, 'handover', 'from_step: implement\n\nshipped foo')
+         RETURNING id",
+    )
+    .bind(task_id)
+    .fetch_one(&app.pool)
+    .await
+    .expect("insert handover row");
+
+    let row: (String, String) = sqlx::query_as(
+        "SELECT kind, content FROM diraigent.task_update WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&app.pool)
+    .await
+    .expect("read back");
+    assert_eq!(row.0, "handover");
+    assert!(row.1.contains("shipped foo"));
+
+    app.cleanup().await;
+}
