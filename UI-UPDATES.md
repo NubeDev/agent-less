@@ -374,17 +374,31 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** \u2014 UI-4 writes
-   `context.qa_override`, `context.session_mode`,
-   `context.preserve_worktree`, `context.knowledge_pin`,
-   `context.knowledge_exclude_tags`, `context.verifications`,
-   `context.fail_fast`, `context.extra_test_cmd`, `context.reports`,
-   `context.integrations`, `context.env_overrides`,
-   `context.mcp_overrides` into the task's `context` JSONB. The
-   client-side override-resolver mirrors SoW-2 safety policy, but
-   the runtime worker must honour these fields. Cross-check each
-   field against the worker code path before shipping the feature
-   as supported.
+6. **Advanced-task overrides round-trip** — ⚠️ verified: **all 12
+   fields are currently ignored by the runtime**. UI-4 persists
+   `qa_override`, `session_mode`, `preserve_worktree`, `knowledge_pin`,
+   `knowledge_exclude_tags`, `verifications`, `fail_fast`,
+   `extra_test_cmd`, `reports`, `integrations`, `env_overrides`, and
+   `mcp_overrides` into `task.context` JSONB, but:
+   - The API ([repository/tasks.rs](apps/api/src/repository/tasks.rs))
+     persists `context` as opaque JSON.
+   - The worker only reads `spec`, `description`, `notes`,
+     `acceptance_criteria`, `files`, `decompose`, and `model` from
+     `context` ([engine/prompt.rs](apps/orchestra/src/engine/prompt.rs),
+     [engine/spawner.rs](apps/orchestra/src/engine/spawner.rs)).
+   - `qa_config` resolution reads the playbook `qa:` block only —
+     `context.qa_override` is dropped.
+   - `env_overrides` / `mcp_overrides` would need to merge into
+     `step_config.env` / `step_config.mcp_servers` in
+     [engine/worker.rs](apps/orchestra/src/engine/worker.rs) before
+     the ResolvedStep is built.
+
+   Each field is a discrete worker change; until those land, the
+   advanced UI must NOT be shipped as "supported" — it stores
+   intent that the runtime silently discards. Recommended split:
+   land `env_overrides` + `mcp_overrides` first (smallest blast
+   radius, both are well-isolated merges), then `qa_override`
+   (single resolver tweak), then the rest as separate features.
 
 ---
 
