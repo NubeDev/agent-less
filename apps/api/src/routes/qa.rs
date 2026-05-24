@@ -21,14 +21,16 @@ use crate::models::{AnswerTaskQaItem, TaskQaItem, TaskQaItemFilters};
 use crate::repository as qa_items;
 
 pub fn routes() -> Router<AppState> {
+    // NOTE: paths are relative — main.rs nests the whole router at `/v1`.
+    // Using `/v1/...` here would produce `/v1/v1/...` and shadow nothing.
     Router::new()
-        .route("/v1/qa", get(list_pending).post(create))
-        .route("/v1/qa/{id}", get(get_one))
-        .route("/v1/qa/{id}/answer", post(answer))
-        .route("/v1/qa/{id}/ai-confidence", post(stamp_ai_confidence))
-        .route("/v1/qa/sweep-expired", post(sweep_expired))
-        .route("/v1/qa/sweep-clean", post(sweep_clean))
-        .route("/v1/qa/metrics", get(metrics))
+        .route("/qa", get(list_pending).post(create))
+        .route("/qa/{id}", get(get_one))
+        .route("/qa/{id}/answer", post(answer))
+        .route("/qa/{id}/ai-confidence", post(stamp_ai_confidence))
+        .route("/qa/sweep-expired", post(sweep_expired))
+        .route("/qa/sweep-clean", post(sweep_clean))
+        .route("/qa/metrics", get(metrics))
 }
 
 async fn create(
