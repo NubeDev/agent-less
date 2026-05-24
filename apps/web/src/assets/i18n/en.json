@@ -540,7 +540,13 @@
     "action": {
       "created": "Created",
       "updated": "Updated",
-      "deleted": "Deleted"
+      "deleted": "Deleted",
+      "answered": "Answered",
+      "resolved": "Resolved",
+      "expired": "Expired",
+      "escalated": "Escalated",
+      "cancelled_cascade": "Cancelled (cascade)",
+      "ai_confidence_stamped": "AI confidence stamped"
     }
   },
   "settings": {

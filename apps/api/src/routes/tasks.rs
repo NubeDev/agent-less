@@ -508,6 +508,19 @@ async fn transition_task(
         match crate::repository::resolve_pending_qa_for_cancelled_task(&state.pool, task_id).await {
             Ok(n) if n > 0 => {
                 tracing::info!(task_id = %task_id, count = n, "cancelled pending QA items");
+                state.fire_event(
+                    task.project_id,
+                    "cancelled_cascade",
+                    "qa",
+                    task_id,
+                    agent_id,
+                    Some(user_id),
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "resolved_count": n,
+                        "reason": "task_cancelled",
+                    }),
+                );
             }
             Ok(_) => {}
             Err(e) => {

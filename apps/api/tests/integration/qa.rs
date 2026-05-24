@@ -772,3 +772,102 @@ async fn qa_ai_confidence_stamp_and_metrics_distribution() {
 
     app.cleanup().await;
 }
+
+/// UI-gap #3: the QA lifecycle writes to `diraigent.audit_log` with the
+/// normalized `entity_type='qa'` and short action verbs the audit UI
+/// knows how to colour. Covers `created`, `answered`, and
+/// `ai_confidence_stamped`. Emission happens via a `tokio::spawn` inside
+/// `fire_event`, so we poll briefly before asserting.
+#[tokio::test]
+async fn qa_lifecycle_emits_audit_rows() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-audit").await;
+    let agent_id = app.create_agent("worker").await;
+    let task = app.create_task(project_id, "audit").await;
+    let task_id = task["id"].as_str().unwrap();
+    let task_uuid: uuid::Uuid = task_id.parse().unwrap();
+
+    // Walk the task to ai_review.
+    app.send(post_json(
+        &format!("/v1/tasks/{task_id}/transition"),
+        json!({ "state": "ready" }),
+    ))
+    .await;
+    app.send(post_json(
+        &format!("/v1/tasks/{task_id}/claim"),
+        json!({ "agent_id": agent_id }),
+    ))
+    .await;
+    app.send(post_json(
+        &format!("/v1/tasks/{task_id}/transition"),
+        json!({ "state": "ai_review" }),
+    ))
+    .await;
+
+    // 1. POST /v1/qa → "created"
+    let r = app
+        .send(post_json(
+            "/v1/qa",
+            json!({
+                "task_id": task_uuid,
+                "project_id": project_id,
+                "step_name": "implement",
+                "kind": "question",
+                "prompt": "audit?",
+                "responder": "human",
+            }),
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "create qa: {}", r.json);
+    let qa_id: uuid::Uuid = r.json["id"].as_str().unwrap().parse().unwrap();
+
+    // 2. Stamp ai-confidence → "ai_confidence_stamped"
+    let r = app
+        .send(post_json(
+            &format!("/v1/qa/{qa_id}/ai-confidence"),
+            json!({ "confidence": 0.42 }),
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "stamp: {}", r.json);
+
+    // 3. Answer → "answered"
+    let r = app
+        .send(post_json(
+            &format!("/v1/qa/{qa_id}/answer"),
+            json!({ "answer": "yes", "target_step": "implement" }),
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "answer: {}", r.json);
+
+    // Audit emission runs in a spawned task — poll for up to ~1s.
+    let mut found: Vec<String> = vec![];
+    for _ in 0..20 {
+        found = sqlx::query_scalar::<_, String>(
+            "SELECT action FROM diraigent.audit_log
+             WHERE entity_type = 'qa' AND entity_id = $1
+             ORDER BY created_at ASC",
+        )
+        .bind(qa_id)
+        .fetch_all(&app.pool)
+        .await
+        .unwrap();
+        if found.len() >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        found.iter().any(|a| a == "created"),
+        "expected 'created' in {found:?}"
+    );
+    assert!(
+        found.iter().any(|a| a == "ai_confidence_stamped"),
+        "expected 'ai_confidence_stamped' in {found:?}"
+    );
+    assert!(
+        found.iter().any(|a| a == "answered"),
+        "expected 'answered' in {found:?}"
+    );
+
+    app.cleanup().await;
+}

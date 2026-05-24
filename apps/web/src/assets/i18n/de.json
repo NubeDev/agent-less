@@ -538,7 +538,13 @@
     "action": {
       "created": "Erstellt",
       "updated": "Aktualisiert",
-      "deleted": "Gelöscht"
+      "deleted": "Gelöscht",
+      "answered": "Beantwortet",
+      "resolved": "Gelöst",
+      "expired": "Abgelaufen",
+      "escalated": "Eskaliert",
+      "cancelled_cascade": "Abgebrochen (Kaskade)",
+      "ai_confidence_stamped": "KI-Konfidenz erfasst"
     }
   },
   "settings": {

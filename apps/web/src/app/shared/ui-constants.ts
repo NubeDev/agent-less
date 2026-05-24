@@ -224,6 +224,9 @@ export const AUDIT_ACTION_COLORS: Record<string, string> = {
   answered: 'text-ctp-blue',
   resolved: 'text-ctp-green',
   expired: 'text-ctp-overlay0',
+  escalated: 'text-ctp-peach',
+  cancelled_cascade: 'text-ctp-overlay0',
+  ai_confidence_stamped: 'text-ctp-sapphire',
 };
 
 // ── Storage Keys ────────────────────────────────────────────────────────────
