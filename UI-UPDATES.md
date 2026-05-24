@@ -374,10 +374,11 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ in progress: 7 of 12
+6. **Advanced-task overrides round-trip** — ⚠️ in progress: 8 of 12
    fields shipped (`env`, `mcp`, `qa_override`, `model_override`,
-   `budget_usd_cap`, `preserve_worktree`, `knowledge.{pin_ids,exclude_tags}`);
-   the other 5 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
+   `budget_usd_cap`, `preserve_worktree`, `knowledge.{pin_ids,exclude_tags}`,
+   `integrations_allowed`);
+   the other 4 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
    `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
    `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
    `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
@@ -431,6 +432,20 @@ panels show "no data yet").
      common path. 6 unit tests cover pin-only, exclude-only,
      combined, identity, missing-knowledge-array, and
      pin-with-no-matches.
+   - `integrations_allowed` → `apply_integrations_filter` in
+     [engine/prompt.rs](apps/orchestra/src/engine/prompt.rs)
+     filters `project_context.integrations` in place to entries
+     whose `kind` matches the UI-supplied whitelist
+     (e.g. `["forgejo", "github"]`). Applied after decrypt in
+     both the full-context and trimmed-context branches so the
+     filter survives `trim_context`. Empty / missing / non-array
+     values are no-ops; entries with a missing `kind` are dropped
+     when a filter is active because they cannot be on a
+     whitelist. Matching is case-sensitive (UI sends canonical
+     lowercase). 7 unit tests in `engine::prompt::tests` cover
+     empty-allowed-noop, allowed-keeps-only-matching,
+     drop-missing-kind, no-match-empties, missing-array-noop,
+     non-object-context-noop, and case-sensitivity.
 
    All five reuse a single `api.get_task()` call up front; malformed
    values degrade silently so the advanced UI can never block worker
@@ -447,8 +462,7 @@ panels show "no data yet").
    Each remaining field is a discrete worker change; until those land,
    the advanced UI must NOT be shipped as "supported" for them — it
    stores intent that the runtime silently discards. Remaining:
-   `session_mode`, `verifications.*`, `reports`,
-   `integrations_allowed`.
+   `session_mode`, `verifications.*`, `reports`.
 
 ---
 

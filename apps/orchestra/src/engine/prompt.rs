@@ -223,6 +223,23 @@ pub async fn build_user_prompt(
         .unwrap_or("")
         .to_string();
 
+    // UI-gap #6: extract `context.integrations_allowed` from the task and use
+    // it to whitelist the project-context `integrations` array by `kind`
+    // before the prompt is rendered. Empty / missing / malformed values
+    // degrade to "no filter" so the advanced UI can never starve the agent
+    // by accident.
+    let integrations_allowed: Vec<String> = task_json
+        .as_ref()
+        .and_then(|t| t.get("context"))
+        .and_then(|c| c.get("integrations_allowed"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
     // Process raw project context: decrypt and optionally trim based on step type.
     let project_context = if context_level.include_full_context {
         raw_context
@@ -231,6 +248,7 @@ pub async fn build_user_prompt(
                 if let Some(dek) = dek {
                     crate::crypto::decrypt_json_recursive(dek, &mut v, "context");
                 }
+                apply_integrations_filter(&mut v, &integrations_allowed);
                 serde_json::to_string_pretty(&v).unwrap_or_default()
             })
             .unwrap_or_default()
@@ -243,6 +261,7 @@ pub async fn build_user_prompt(
                     crate::crypto::decrypt_json_recursive(dek, &mut v, "context");
                 }
                 trim_context(&mut v, &context_level);
+                apply_integrations_filter(&mut v, &integrations_allowed);
                 serde_json::to_string_pretty(&v).unwrap_or_default()
             })
             .unwrap_or_default()
@@ -641,6 +660,36 @@ pub(crate) fn apply_knowledge_filters(
         true
     });
     out
+}
+
+/// UI-gap #6: filter the project-context `integrations` array in place to
+/// only those whose `kind` matches one of `allowed_kinds`.
+///
+/// - Empty `allowed_kinds` is a no-op (the default UI behaviour leaves the
+///   list empty, in which case all integrations are exposed to the agent).
+/// - Entries with a missing / non-string `kind` are dropped when a filter
+///   is active — they cannot be on a whitelist.
+/// - A missing or non-array `integrations` field is a no-op.
+/// - Matching is exact (case-sensitive); the UI sends canonical lowercase
+///   kinds (`"forgejo"`, `"github"`) that line up with how integrations are
+///   stored.
+pub(crate) fn apply_integrations_filter(ctx: &mut serde_json::Value, allowed_kinds: &[String]) {
+    if allowed_kinds.is_empty() {
+        return;
+    }
+    let Some(obj) = ctx.as_object_mut() else {
+        return;
+    };
+    let Some(serde_json::Value::Array(arr)) = obj.get_mut("integrations") else {
+        return;
+    };
+    arr.retain(|item| {
+        let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind.is_empty() {
+            return false;
+        }
+        allowed_kinds.iter().any(|k| k == kind)
+    });
 }
 
 fn build_related_context_section(related: &serde_json::Value) -> String {
@@ -2226,5 +2275,77 @@ mod tests {
         let r = related_fixture();
         let f = apply_knowledge_filters(&r, &["nonexistent".into()], &[]);
         assert!(f["knowledge"].as_array().unwrap().is_empty());
+    }
+
+    // ── apply_integrations_filter (UI-gap #6) ──────────────
+
+    fn ctx_with_integrations() -> serde_json::Value {
+        serde_json::json!({
+            "project": {"id": "p1"},
+            "integrations": [
+                {"id": "i1", "name": "fg-prod", "kind": "forgejo"},
+                {"id": "i2", "name": "gh-mirror", "kind": "github"},
+                {"id": "i3", "name": "slack", "kind": "slack"},
+                {"id": "i4", "name": "no-kind"},
+            ],
+        })
+    }
+
+    #[test]
+    fn integrations_filter_empty_allowed_is_noop() {
+        let mut ctx = ctx_with_integrations();
+        let before = ctx.clone();
+        apply_integrations_filter(&mut ctx, &[]);
+        assert_eq!(ctx, before);
+    }
+
+    #[test]
+    fn integrations_filter_keeps_only_allowed_kinds() {
+        let mut ctx = ctx_with_integrations();
+        apply_integrations_filter(&mut ctx, &["forgejo".into(), "github".into()]);
+        let arr = ctx["integrations"].as_array().unwrap();
+        let ids: Vec<&str> = arr.iter().map(|i| i["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["i1", "i2"]);
+    }
+
+    #[test]
+    fn integrations_filter_drops_missing_kind_when_active() {
+        let mut ctx = ctx_with_integrations();
+        apply_integrations_filter(&mut ctx, &["forgejo".into()]);
+        let arr = ctx["integrations"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"].as_str(), Some("i1"));
+    }
+
+    #[test]
+    fn integrations_filter_no_match_empties_array() {
+        let mut ctx = ctx_with_integrations();
+        apply_integrations_filter(&mut ctx, &["nonexistent".into()]);
+        assert!(ctx["integrations"].as_array().unwrap().is_empty());
+        assert!(ctx.get("project").is_some());
+    }
+
+    #[test]
+    fn integrations_filter_missing_array_is_noop() {
+        let mut ctx = serde_json::json!({"project": {"id": "p1"}});
+        let before = ctx.clone();
+        apply_integrations_filter(&mut ctx, &["forgejo".into()]);
+        assert_eq!(ctx, before);
+    }
+
+    #[test]
+    fn integrations_filter_non_object_context_is_noop() {
+        let mut ctx = serde_json::json!(["not", "an", "object"]);
+        let before = ctx.clone();
+        apply_integrations_filter(&mut ctx, &["forgejo".into()]);
+        assert_eq!(ctx, before);
+    }
+
+    #[test]
+    fn integrations_filter_kind_match_is_case_sensitive() {
+        let mut ctx = ctx_with_integrations();
+        // UI sends canonical lowercase; uppercase whitelist entry must not match.
+        apply_integrations_filter(&mut ctx, &["Forgejo".into()]);
+        assert!(ctx["integrations"].as_array().unwrap().is_empty());
     }
 }
