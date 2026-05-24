@@ -174,7 +174,7 @@ pub async fn promote_observation(
     .bind(obs.project_id)
     .bind(&title)
     .bind(&kind)
-    .bind(&initial_state)
+    .bind(initial_state)
     .bind(urgent)
     .bind(&context)
     .bind(&capabilities)

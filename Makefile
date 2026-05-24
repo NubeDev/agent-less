@@ -37,7 +37,7 @@ export CORS_ORIGINS := http://localhost:$(WEB_PORT)
 
 # ── Postgres ────────────────────────────────────────────────────────
 
-.PHONY: db-up db-down db-logs db-psql
+.PHONY: db-up db-down db-logs db-psql db-reset clean
 
 db-up:
 	@if [ "$$(docker inspect -f '{{.State.Running}}' diraigent-pg 2>/dev/null)" = "true" ]; then \
@@ -59,11 +59,59 @@ db-up:
 db-down:
 	docker rm -f diraigent-pg
 
+db-reset: stop
+	docker rm -f diraigent-pg 2>/dev/null || true
+	docker volume rm diraigent-pgdata 2>/dev/null || true
+	@echo "DB wiped. Run 'make start' to start fresh."
+
+clean: db-reset db-up
+	@echo "Fresh DB ready on port $(PG_PORT)."
+
 db-logs:
 	docker logs -f diraigent-pg
 
 db-psql:
 	docker exec -it diraigent-pg psql -U $(PG_USER) -d $(PG_DB)
+
+# ── Forgejo ──────────────────────────────────────────────────────────
+
+FORGEJO_PORT := 3030
+
+.PHONY: forgejo-up forgejo-down forgejo-logs
+
+forgejo-up:
+	@if [ "$$(docker inspect -f '{{.State.Running}}' diraigent-forgejo 2>/dev/null)" = "true" ]; then \
+		echo "Forgejo already running on http://localhost:$(FORGEJO_PORT)"; exit 0; \
+	fi
+	@docker rm -f diraigent-forgejo 2>/dev/null || true
+	docker volume create diraigent-forgejo-data 2>/dev/null || true
+	docker run -d --name diraigent-forgejo \
+		-e FORGEJO__database__DB_TYPE=sqlite3 \
+		-e FORGEJO__database__PATH=/data/gitea/forgejo.db \
+		-e FORGEJO__server__ROOT_URL=http://localhost:$(FORGEJO_PORT)/ \
+		-e FORGEJO__server__HTTP_PORT=3000 \
+		-e FORGEJO__server__DOMAIN=localhost \
+		-e FORGEJO__service__DISABLE_REGISTRATION=false \
+		-e FORGEJO__actions__ENABLED=true \
+		-e FORGEJO__security__INSTALL_LOCK=true \
+		-v diraigent-forgejo-data:/data \
+		-p $(FORGEJO_PORT):3000 \
+		-p 2222:22 \
+		codeberg.org/forgejo/forgejo:11
+	@echo "Waiting for Forgejo..."
+	@sleep 5
+	@docker exec --user git diraigent-forgejo forgejo admin user create \
+		--admin --username diraigent --password diraigent \
+		--email admin@localhost --must-change-password=false \
+		--config /data/gitea/conf/app.ini 2>/dev/null || true
+	@echo "Forgejo ready: http://localhost:$(FORGEJO_PORT)"
+	@echo "  Login: diraigent / diraigent"
+
+forgejo-down:
+	docker rm -f diraigent-forgejo
+
+forgejo-logs:
+	docker logs -f diraigent-forgejo
 
 # ── Build ───────────────────────────────────────────────────────────
 
