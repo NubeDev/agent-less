@@ -1,4 +1,5 @@
 pub mod git_dispatch;
+pub mod playbook_dispatch;
 pub mod protocol;
 
 use self::protocol::WsMessage;
@@ -295,6 +296,26 @@ async fn connect_and_run(
                             api: api.clone(),
                             projects_path: projects_path.to_path_buf(),
                         });
+                    }
+                    WsMessage::PlaybookRequest {
+                        request_id,
+                        project_id,
+                        operation,
+                        name,
+                        content,
+                    } => {
+                        playbook_dispatch::handle_playbook_request(
+                            playbook_dispatch::PlaybookRequestParams {
+                                sender: tx.clone(),
+                                request_id,
+                                project_id,
+                                operation,
+                                name,
+                                content,
+                                api: api.clone(),
+                                projects_path: projects_path.to_path_buf(),
+                            },
+                        );
                     }
                     _ => {
                         warn!("unexpected WS message type from API");

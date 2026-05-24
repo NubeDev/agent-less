@@ -356,15 +356,16 @@ panels show "no data yet").
    `metadata.task_id` stamp on knowledge writes so the page can
    show provenance.
 
-5. **Playbook source URL** — ⚠️ partial. `load_repo_playbooks` now
-   stamps `metadata.source_path` and a best-effort `metadata.source_url`
+5. **Playbook source URL** — ✅ resolved. `load_repo_playbooks` stamps
+   `metadata.source_path` and a best-effort `metadata.source_url`
    (derived from `.git/config` origin + `HEAD` branch) onto every
-   playbook parsed from `.diraigent/playbooks/`. Still missing: an
-   orchestra-side WebSocket handler for `WsMessage::PlaybookRequest`
-   so the API's `/v1/projects/{id}/playbooks` proxy actually returns
-   the loaded playbooks (today the request times out — see
-   `a853cb4 fix(web/quick): playbook fetch is non-fatal`). Seeded DB
-   playbooks still won't carry `source_url`.
+   playbook parsed from `.diraigent/playbooks/`. The orchestra now has
+   a `playbook_dispatch` WebSocket handler for
+   `WsMessage::PlaybookRequest` (operations: list/get/create/update/
+   delete) so the API's `/v1/projects/{id}/playbooks` proxy returns
+   real data instead of timing out. Seeded DB playbooks still won't
+   carry `source_url` — that requires a separate analyzer/seed
+   migration if we want it on the defaults.
 
 6. **Advanced-task overrides round-trip** \u2014 UI-4 writes
    `context.qa_override`, `context.session_mode`,
