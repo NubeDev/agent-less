@@ -50,6 +50,26 @@ const KINDS: ReportKind[] = ['security', 'component', 'architecture', 'performan
             <option [value]="s">{{ t('reports.status.' + s) }}</option>
           }
         </select>
+        <select
+          [(ngModel)]="selectedKind"
+          class="bg-surface text-text-primary text-sm rounded-lg px-3 py-2 border border-border
+                 focus:outline-none focus:ring-1 focus:ring-accent">
+          <option value="">All kinds</option>
+          @for (k of kinds; track k) {
+            <option [value]="k">{{ t('reports.kind.' + k) }}</option>
+          }
+        </select>
+        <input
+          type="text"
+          [(ngModel)]="taskFilter"
+          placeholder="task id"
+          class="bg-surface text-text-primary text-sm rounded-lg px-3 py-2 border border-border
+                 focus:outline-none focus:ring-1 focus:ring-accent w-44" />
+        <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+          <input type="checkbox" [(ngModel)]="taskRunOnly"
+            class="rounded border-border bg-surface text-accent focus:ring-1 focus:ring-accent" />
+          task-run reports only
+        </label>
       </app-filter-bar>
 
       <!-- Content: list + detail -->
@@ -215,6 +235,9 @@ export class ReportsPage extends CrudFeatureBase<SpReport> {
   readonly kinds = KINDS;
 
   selectedStatus = '';
+  selectedKind = '';
+  taskFilter = '';
+  taskRunOnly = false;
 
   formTitle = '';
   formKind: ReportKind = 'custom';
@@ -225,12 +248,18 @@ export class ReportsPage extends CrudFeatureBase<SpReport> {
 
   filtered = computed(() => {
     const q = this.searchQuery().toLowerCase().trim();
+    const k = this.selectedKind;
+    const tf = this.taskFilter.trim().toLowerCase();
+    const runOnly = this.taskRunOnly;
     let result = this.items();
     if (q) {
       result = result.filter(
         item => item.title.toLowerCase().includes(q) || (item.prompt ?? '').toLowerCase().includes(q),
       );
     }
+    if (k) result = result.filter(item => item.kind === k);
+    if (runOnly) result = result.filter(item => item.task_id !== null);
+    if (tf) result = result.filter(item => (item.task_id ?? '').toLowerCase().includes(tf));
     return result.slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   });
 
