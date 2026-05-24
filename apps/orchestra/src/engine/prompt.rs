@@ -151,9 +151,42 @@ pub async fn build_user_prompt(
 
     // Build related context section (task-relevant knowledge/decisions/observations).
     // Only included for full-context steps (implement/dream), not minimal (review).
+    // UI-gap #6: apply `context.knowledge.pin_ids` / `context.knowledge.exclude_tags`
+    // filters from the advanced-task UI before rendering. The filter
+    // works on the already-fetched related set — pins constrain to a
+    // whitelist of IDs, exclude_tags drops any entry whose tags
+    // intersect the list. Malformed values degrade silently.
     let related_context = match related_items_res {
         Some(Ok(ref related)) => {
-            let section = build_related_context_section(related);
+            let knowledge_overrides = task_json
+                .as_ref()
+                .and_then(|t| t.get("context"))
+                .and_then(|c| c.get("knowledge"))
+                .and_then(|k| k.as_object());
+            let pin_ids: Vec<String> = knowledge_overrides
+                .and_then(|k| k.get("pin_ids"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let exclude_tags: Vec<String> = knowledge_overrides
+                .and_then(|k| k.get("exclude_tags"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let filtered = if pin_ids.is_empty() && exclude_tags.is_empty() {
+                None
+            } else {
+                Some(apply_knowledge_filters(related, &pin_ids, &exclude_tags))
+            };
+            let section = build_related_context_section(filtered.as_ref().unwrap_or(related));
             if section.is_empty() {
                 debug!("task {tid}: related items returned empty");
             }
@@ -565,6 +598,51 @@ fn trim_context(context: &mut serde_json::Value, level: &ContextLevel) {
 ///
 /// Formats knowledge, decisions, and observations with title, relevance score,
 /// and snippet. Returns an empty string if no related items are found.
+/// UI-gap #6: apply per-task knowledge filters to the related-items
+/// payload returned by `/v1/tasks/{id}/related`.
+///
+/// - `pin_ids`: when non-empty, restrict `knowledge` to entries whose
+///   `id` is in the list. Decisions/observations pass through
+///   unchanged (the UI surfaces pinning for knowledge only).
+/// - `exclude_tags`: drop any knowledge entry whose `tags` array
+///   intersects the list (case-sensitive match).
+///
+/// Returns a new `Value` so the caller can decide whether to keep the
+/// original (when both lists are empty). Decisions and observations
+/// are deep-cloned through unchanged; the cost is one extra clone per
+/// rendered prompt, which is dwarfed by the LLM call.
+pub(crate) fn apply_knowledge_filters(
+    related: &serde_json::Value,
+    pin_ids: &[String],
+    exclude_tags: &[String],
+) -> serde_json::Value {
+    let mut out = related.clone();
+    let Some(arr) = out.get_mut("knowledge").and_then(|v| v.as_array_mut()) else {
+        return out;
+    };
+    arr.retain(|item| {
+        if !pin_ids.is_empty() {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if !pin_ids.iter().any(|p| p == id) {
+                return false;
+            }
+        }
+        if !exclude_tags.is_empty()
+            && let Some(tags) = item.get("tags").and_then(|v| v.as_array())
+        {
+            let hit = tags
+                .iter()
+                .filter_map(|t| t.as_str())
+                .any(|t| exclude_tags.iter().any(|e| e == t));
+            if hit {
+                return false;
+            }
+        }
+        true
+    });
+    out
+}
+
 fn build_related_context_section(related: &serde_json::Value) -> String {
     let knowledge = related["knowledge"].as_array();
     let decisions = related["decisions"].as_array();
@@ -2078,5 +2156,75 @@ mod tests {
         let (from, body) = parse_handover_body("just a body");
         assert_eq!(from, None);
         assert_eq!(body, "just a body");
+    }
+
+    // ── apply_knowledge_filters (UI-gap #6) ────────────────
+
+    fn related_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "knowledge": [
+                {"id": "k1", "title": "A", "tags": ["api", "db"]},
+                {"id": "k2", "title": "B", "tags": ["ui"]},
+                {"id": "k3", "title": "C", "tags": []},
+                {"id": "k4", "title": "D"}, // no tags field
+            ],
+            "decisions": [{"id": "d1", "title": "X"}],
+            "observations": [{"id": "o1", "title": "Y"}],
+        })
+    }
+
+    #[test]
+    fn knowledge_filter_pin_ids_keeps_only_listed() {
+        let r = related_fixture();
+        let f = apply_knowledge_filters(&r, &["k2".into(), "k4".into()], &[]);
+        let ks = f["knowledge"].as_array().unwrap();
+        assert_eq!(ks.len(), 2);
+        let ids: Vec<&str> = ks.iter().map(|k| k["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"k2"));
+        assert!(ids.contains(&"k4"));
+        // Decisions and observations untouched.
+        assert_eq!(f["decisions"].as_array().unwrap().len(), 1);
+        assert_eq!(f["observations"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn knowledge_filter_exclude_tags_drops_intersecting() {
+        let r = related_fixture();
+        let f = apply_knowledge_filters(&r, &[], &["db".into()]);
+        let ks = f["knowledge"].as_array().unwrap();
+        let ids: Vec<&str> = ks.iter().map(|k| k["id"].as_str().unwrap()).collect();
+        // k1 has "db" → drop. k2, k3, k4 stay.
+        assert_eq!(ids, vec!["k2", "k3", "k4"]);
+    }
+
+    #[test]
+    fn knowledge_filter_combines_pin_and_exclude() {
+        let r = related_fixture();
+        // Pin k1 + k2, exclude "ui" → only k1 remains.
+        let f = apply_knowledge_filters(&r, &["k1".into(), "k2".into()], &["ui".into()]);
+        let ks = f["knowledge"].as_array().unwrap();
+        assert_eq!(ks.len(), 1);
+        assert_eq!(ks[0]["id"].as_str(), Some("k1"));
+    }
+
+    #[test]
+    fn knowledge_filter_no_pins_no_excludes_is_identity() {
+        let r = related_fixture();
+        let f = apply_knowledge_filters(&r, &[], &[]);
+        assert_eq!(f["knowledge"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn knowledge_filter_missing_knowledge_array_returns_clone() {
+        let r = serde_json::json!({"decisions": [], "observations": []});
+        let f = apply_knowledge_filters(&r, &["k1".into()], &["t1".into()]);
+        assert_eq!(f, r);
+    }
+
+    #[test]
+    fn knowledge_filter_pin_with_no_matches_empties_array() {
+        let r = related_fixture();
+        let f = apply_knowledge_filters(&r, &["nonexistent".into()], &[]);
+        assert!(f["knowledge"].as_array().unwrap().is_empty());
     }
 }
