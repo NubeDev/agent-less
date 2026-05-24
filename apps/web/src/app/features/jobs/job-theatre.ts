@@ -115,11 +115,49 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
     .job-theatre-root { display: flex; flex-direction: column; height: calc(100vh - 4rem); }
     .theatre { display: grid; grid-template-columns: minmax(0, 1fr) 420px; flex: 1; min-height: 0; transition: grid-template-columns 0.2s ease; }
     .theatre.diff-open { grid-template-columns: minmax(0, 1fr) 70%; }
-    .timeline-strip { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--surface, #181825); border-top: 1px solid var(--border, #313244); color: #cdd6f4; font-size: 12px; flex: 0 0 auto; }
+    .timeline-strip { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 1rem; background: var(--surface, #181825); border-top: 1px solid var(--border, #313244); color: #cdd6f4; font-size: 12px; flex: 0 0 auto; }
     .timeline-strip input[type="range"] { flex: 1; accent-color: #cba6f7; }
     .timeline-strip button { background: #313244; border: 1px solid #45475a; color: #cdd6f4; padding: 0.3rem 0.6rem; font-size: 11px; border-radius: 3px; cursor: pointer; }
     .timeline-strip button:hover { background: #45475a; }
     .timeline-strip button.active { background: #cba6f7; color: #11111b; border-color: #cba6f7; }
+    .tl-kpis { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+    .tl-kpi { display: flex; flex-direction: column; gap: 2px; min-width: 92px; }
+    .tl-kpi .k { font-size: 10px; color: #6c7086; text-transform: uppercase; letter-spacing: 0.06em; }
+    .tl-kpi .v { font-size: 13px; font-family: monospace; color: #cdd6f4; }
+    .tl-kpi .v.done { color: #a6e3a1; }
+    .tl-kpi .v.failed { color: #f38ba8; }
+    .tl-kpi .v.running { color: #fab387; }
+    .tl-kpi .v.parked { color: #f9e2af; }
+    .tl-controls { display: flex; align-items: center; gap: 0.5rem; }
+    .tl-bar-wrap { position: relative; flex: 1; height: 38px; }
+    .tl-phases { position: absolute; inset: 0 0 18px 0; display: flex; border-radius: 3px; overflow: hidden; background: #11111b; border: 1px solid #313244; }
+    .tl-phase { display: flex; align-items: center; justify-content: center; font-size: 10px; color: #11111b; text-shadow: 0 0 2px rgba(0,0,0,0.3); white-space: nowrap; overflow: hidden; border-right: 1px solid rgba(17,17,27,0.5); }
+    .tl-phase:last-child { border-right: none; }
+    .tl-phase.task { background: #cba6f7; }
+    .tl-phase.step { background: #89b4fa; }
+    .tl-phase.verify { background: #94e2d5; }
+    .tl-phase.merge { background: #f5c2e7; }
+    .tl-phase.report { background: #a6e3a1; }
+    .tl-phase.qa { background: #f9e2af; }
+    .tl-ticks { position: absolute; left: 0; right: 0; top: 0; height: 20px; pointer-events: none; }
+    .tl-tick { position: absolute; transform: translateX(-50%); width: 8px; height: 8px; border-radius: 50%; top: 6px; }
+    .tl-tick.qa { background: #f9e2af; border: 1px solid #11111b; }
+    .tl-tick.report { background: #a6e3a1; border: 1px solid #11111b; }
+    .tl-tick.failed { background: #f38ba8; border: 1px solid #11111b; }
+    .tl-scrub { position: absolute; left: 0; right: 0; bottom: 0; height: 18px; }
+    .tl-scrub input[type="range"] { width: 100%; height: 100%; margin: 0; }
+    .tl-playhead { position: absolute; top: -2px; bottom: 0; width: 2px; background: #cba6f7; pointer-events: none; box-shadow: 0 0 4px #cba6f7; }
+    .tl-footer { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: 11px; color: #a6adc8; }
+    .tl-current { font-family: monospace; }
+    .tl-current .ev-kind { display: inline-block; padding: 1px 6px; border-radius: 3px; margin-right: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .tl-current .ev-kind.task { background: #cba6f7; color: #11111b; }
+    .tl-current .ev-kind.step { background: #89b4fa; color: #11111b; }
+    .tl-current .ev-kind.qa { background: #f9e2af; color: #11111b; }
+    .tl-current .ev-kind.report { background: #a6e3a1; color: #11111b; }
+    .tl-current .ev-kind.verify { background: #94e2d5; color: #11111b; }
+    .tl-current .ev-kind.merge { background: #f5c2e7; color: #11111b; }
+    .tl-legend { display: flex; gap: 0.75rem; color: #6c7086; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .tl-legend .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
     .timeline-label { font-family: monospace; color: #a6adc8; min-width: 14ch; text-align: right; }
     .timeline-mode { font-size: 10px; padding: 2px 6px; border-radius: 3px; background: #313244; color: #a6adc8; text-transform: uppercase; letter-spacing: 0.05em; }
     .timeline-mode.live { background: #1f3d2a; color: #a6e3a1; }
@@ -328,21 +366,85 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
       </aside>
     </div>
     <div class="timeline-strip" data-testid="timeline-strip">
-      <span class="timeline-mode" [class.live]="scrubTime() === null" [class.scrubbing]="scrubTime() !== null"
-            [attr.data-testid]="'timeline-mode-' + (scrubTime() === null ? 'live' : 'scrubbing')">
-        {{ scrubTime() === null ? 'LIVE' : 'SCRUB' }}
-      </span>
-      <button data-testid="timeline-replay" [class.active]="replaying()" (click)="toggleReplay()" [disabled]="!timelineRange()">
-        {{ replaying() ? 'Pause' : 'Replay' }}
-      </button>
-      <button data-testid="timeline-live" (click)="goLive()" [disabled]="scrubTime() === null">Live</button>
-      <input type="range" min="0" max="1000" step="1"
-             [value]="scrubFraction() * 1000"
-             (input)="onScrub($event)"
-             (mousedown)="onScrubStart()"
-             [disabled]="!timelineRange()"
-             data-testid="timeline-scrub" />
-      <span class="timeline-label" data-testid="timeline-label">{{ scrubLabel() }}</span>
+      <!-- KPI row: dense rollup of task vitals. -->
+      <div class="tl-kpis">
+        <div class="tl-kpi">
+          <span class="k">Status</span>
+          <span class="v" [class.done]="kpiStatusClass()==='done'" [class.failed]="kpiStatusClass()==='failed'"
+                [class.running]="kpiStatusClass()==='running'" [class.parked]="kpiStatusClass()==='parked'">
+            {{ kpiStatus() }}
+          </span>
+        </div>
+        <div class="tl-kpi"><span class="k">Step</span><span class="v">{{ kpiStep() }}</span></div>
+        <div class="tl-kpi"><span class="k">Elapsed</span><span class="v">{{ kpiElapsed() }}</span></div>
+        <div class="tl-kpi"><span class="k">Cost (USD)</span><span class="v">{{ kpiCost() }}</span></div>
+        <div class="tl-kpi"><span class="k">Tokens in/out</span><span class="v">{{ kpiTokens() }}</span></div>
+        <div class="tl-kpi"><span class="k">QA items</span><span class="v">{{ kpiQa() }}</span></div>
+        <div class="tl-kpi"><span class="k">Files merged</span><span class="v">{{ kpiFiles() }}</span></div>
+        <div class="tl-kpi"><span class="k">Started</span><span class="v">{{ kpiStarted() }}</span></div>
+        <div class="tl-kpi"><span class="k">Completed</span><span class="v">{{ kpiCompleted() }}</span></div>
+      </div>
+
+      <!-- Controls row: mode + replay + live + scrub label. -->
+      <div class="tl-controls">
+        <span class="timeline-mode" [class.live]="scrubTime() === null" [class.scrubbing]="scrubTime() !== null"
+              [attr.data-testid]="'timeline-mode-' + (scrubTime() === null ? 'live' : 'scrubbing')">
+          {{ scrubTime() === null ? 'LIVE' : 'SCRUB' }}
+        </span>
+        <button data-testid="timeline-replay" [class.active]="replaying()" (click)="toggleReplay()" [disabled]="!timelineRange()">
+          {{ replaying() ? 'Pause' : 'Replay 4\u00d7' }}
+        </button>
+        <button data-testid="timeline-live" (click)="goLive()" [disabled]="scrubTime() === null">Snap to live</button>
+        <span class="timeline-label" data-testid="timeline-label">{{ scrubLabel() }}</span>
+      </div>
+
+      <!-- Bar: phase segments + event ticks + scrub + playhead. -->
+      <div class="tl-bar-wrap">
+        <div class="tl-phases" data-testid="tl-phases">
+          @for (p of phaseSegments(); track p.id) {
+            <div class="tl-phase" [class]="'tl-phase ' + p.kind"
+                 [style.flex]="p.weight"
+                 [attr.title]="p.label + ' \u2014 ' + p.duration"
+                 [attr.data-testid]="'tl-phase-' + p.kind">
+              {{ p.label }}
+            </div>
+          }
+        </div>
+        <div class="tl-ticks">
+          @for (m of eventMarkers(); track m.id) {
+            <div class="tl-tick" [class]="'tl-tick ' + m.kind"
+                 [style.left.%]="m.pct"
+                 [attr.title]="m.label + ' @ ' + m.ts"
+                 [attr.data-testid]="'tl-marker-' + m.kind"></div>
+          }
+        </div>
+        <div class="tl-playhead" [style.left.%]="scrubFraction() * 100"></div>
+        <div class="tl-scrub">
+          <input type="range" min="0" max="1000" step="1"
+                 [value]="scrubFraction() * 1000"
+                 (input)="onScrub($event)"
+                 (mousedown)="onScrubStart()"
+                 [disabled]="!timelineRange()"
+                 data-testid="timeline-scrub" />
+        </div>
+      </div>
+
+      <!-- Footer: legend + at-this-moment event. -->
+      <div class="tl-footer">
+        <div class="tl-current" data-testid="tl-current">
+          <span class="ev-kind" [class]="'ev-kind ' + currentEvent().kind">{{ currentEvent().kind }}</span>
+          {{ currentEvent().label }}
+          <span style="color:#6c7086"> \u2014 {{ currentEvent().ts }}</span>
+        </div>
+        <div class="tl-legend">
+          <span><span class="sw" style="background:#cba6f7"></span>task</span>
+          <span><span class="sw" style="background:#89b4fa"></span>step</span>
+          <span><span class="sw" style="background:#94e2d5"></span>verify</span>
+          <span><span class="sw" style="background:#f5c2e7"></span>merge</span>
+          <span><span class="sw" style="background:#f9e2af"></span>qa</span>
+          <span><span class="sw" style="background:#a6e3a1"></span>report</span>
+        </div>
+      </div>
     </div>
     </div>
     }
@@ -772,6 +874,218 @@ export class JobTheatrePage implements OnInit, OnDestroy {
     if (t === null || !r) return 'live';
     const d = new Date(t);
     return d.toLocaleTimeString();
+  });
+
+  // ---- Timeline dashboard signals -----------------------------------------
+
+  /** Display status string for KPI ('done' | 'failed' | 'running' | 'parked' | 'pending' | <state>). */
+  kpiStatus = computed<string>(() => {
+    const t = this.task();
+    if (!t) return '—';
+    return t.state;
+  });
+
+  kpiStatusClass = computed<string>(() => {
+    const s = this.kpiStatus();
+    if (s === 'done') return 'done';
+    if (s === 'failed' || s === 'cancelled') return 'failed';
+    if (s === 'ai_review' || s === 'human_review') return 'parked';
+    if (s === 'backlog' || s === 'ready' || s === '—') return 'pending';
+    return 'running';
+  });
+
+  kpiStep = computed<string>(() => {
+    const t = this.task();
+    if (!t) return '—';
+    const steps = this.nodes().filter(n => n.kind === 'step');
+    const n = steps.length;
+    const playbook = (t as unknown as { playbook_name?: string | null }).playbook_name ?? null;
+    if (n === 0) return playbook ? `${playbook} (queued)` : '—';
+    const cur = t.playbook_step ?? n;
+    return `${cur}/${Math.max(cur, n)} \u00b7 ${steps[steps.length - 1].label}`;
+  });
+
+  kpiElapsed = computed<string>(() => {
+    const t = this.task();
+    if (!t) return '—';
+    const start = new Date(t.claimed_at ?? t.created_at).getTime();
+    const end = t.completed_at ? new Date(t.completed_at).getTime() : Date.now();
+    return this.fmtDuration(start, end);
+  });
+
+  kpiCost = computed<string>(() => {
+    const t = this.task();
+    if (!t) return '—';
+    return `$${t.cost_usd.toFixed(4)}`;
+  });
+
+  kpiTokens = computed<string>(() => {
+    const t = this.task();
+    if (!t) return '—';
+    const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+    return `${fmt(t.input_tokens)} / ${fmt(t.output_tokens)}`;
+  });
+
+  kpiQa = computed<string>(() => {
+    const qs = this.qa();
+    if (qs.length === 0) return '0';
+    const pending = qs.filter(q => q.status !== 'resolved' && q.status !== 'answered' && q.status !== 'expired').length;
+    return pending > 0 ? `${qs.length} (${pending} open)` : String(qs.length);
+  });
+
+  kpiFiles = computed<string>(() => {
+    const groups = this.filesByStep();
+    const n = groups.reduce((acc, g) => acc + g.files.length, 0);
+    return String(n);
+  });
+
+  kpiStarted = computed<string>(() => {
+    const t = this.task();
+    if (!t) return '—';
+    return new Date(t.claimed_at ?? t.created_at).toLocaleTimeString();
+  });
+
+  kpiCompleted = computed<string>(() => {
+    const t = this.task();
+    if (!t || !t.completed_at) return '—';
+    return new Date(t.completed_at).toLocaleTimeString();
+  });
+
+  /**
+   * Phase segments — proportional-width chunks for the bar. Built from
+   * the step nodes' log timestamps, then the synth verify / merge tail
+   * (each given a nominal slice of the post-last-log window).
+   */
+  phaseSegments = computed<{ id: string; kind: string; label: string; weight: number; duration: string }[]>(() => {
+    const r = this.timelineRange();
+    if (!r) return [];
+    const [s, e] = r;
+    const span = e - s;
+    if (span <= 0) return [];
+    const ns = this.nodes();
+    const steps = ns.filter(n => n.kind === 'step');
+    const verify = ns.find(n => n.kind === 'verify');
+    const merge = ns.find(n => n.kind === 'merge');
+    type Seg = { id: string; kind: string; label: string; weight: number; duration: string };
+    const out: Seg[] = [];
+    // task header slice: from created_at -> first step (or end)
+    const firstStepTs = steps.length > 0
+      ? new Date((steps[0].ref as { logs: TaskLogSummary[] }).logs[0].created_at).getTime()
+      : e;
+    const taskWeight = Math.max(0.02, (firstStepTs - s) / span);
+    out.push({ id: 'task', kind: 'task', label: 'queued', weight: taskWeight, duration: this.fmtDuration(s, firstStepTs) });
+    // step slices: each step extends to the next step's first log (or to end)
+    for (let i = 0; i < steps.length; i++) {
+      const cur = (steps[i].ref as { step_name: string; logs: TaskLogSummary[] });
+      const curTs = new Date(cur.logs[0].created_at).getTime();
+      const nextTs = i + 1 < steps.length
+        ? new Date((steps[i + 1].ref as { logs: TaskLogSummary[] }).logs[0].created_at).getTime()
+        : (verify || merge ? Math.max(curTs + 1000, e - (verify ? span * 0.08 : 0) - (merge ? span * 0.05 : 0)) : e);
+      const weight = Math.max(0.02, (nextTs - curTs) / span);
+      out.push({ id: 'step-' + cur.step_name, kind: 'step', label: cur.step_name, weight, duration: this.fmtDuration(curTs, nextTs) });
+    }
+    if (verify) {
+      out.push({ id: 'verify', kind: 'verify', label: 'verify', weight: Math.max(0.04, 0.06), duration: '—' });
+    }
+    if (merge) {
+      out.push({ id: 'merge', kind: 'merge', label: 'merge', weight: Math.max(0.04, 0.05), duration: '—' });
+    }
+    return out;
+  });
+
+  /** Event marker ticks: QA emission + report creation + failures. */
+  eventMarkers = computed<{ id: string; kind: string; label: string; ts: string; pct: number }[]>(() => {
+    const r = this.timelineRange();
+    if (!r) return [];
+    const [s, e] = r;
+    const span = e - s;
+    const pct = (ts: number) => Math.max(0, Math.min(100, ((ts - s) / span) * 100));
+    const out: { id: string; kind: string; label: string; ts: string; pct: number }[] = [];
+    for (const q of this.qa()) {
+      out.push({
+        id: 'qa-' + q.id, kind: 'qa', label: `QA fired (${q.status})`,
+        ts: q.created_at, pct: pct(new Date(q.created_at).getTime()),
+      });
+    }
+    for (const rep of this.reports()) {
+      out.push({
+        id: 'rep-' + rep.id, kind: 'report', label: rep.title,
+        ts: rep.created_at, pct: pct(new Date(rep.created_at).getTime()),
+      });
+    }
+    const t = this.task();
+    if (t && (t.state === 'failed' || t.state === 'cancelled') && t.completed_at) {
+      out.push({
+        id: 'fail', kind: 'failed', label: `task ${t.state}`,
+        ts: t.completed_at, pct: pct(new Date(t.completed_at).getTime()),
+      });
+    }
+    return out;
+  });
+
+  /** "At this moment" event description — what's closest to scrubTime (or live = latest). */
+  currentEvent = computed<{ kind: string; label: string; ts: string }>(() => {
+    const r = this.timelineRange();
+    if (!r) return { kind: 'task', label: 'no task loaded', ts: '—' };
+    const t = this.scrubTime() ?? r[1];
+    // Build event list: step starts + qa + reports + verify/merge resolution.
+    type Ev = { kind: string; label: string; tsMs: number; tsIso: string };
+    const evs: Ev[] = [];
+    const task = this.task();
+    if (task) {
+      evs.push({
+        kind: 'task', label: `task created \u2014 ${task.title}`,
+        tsMs: new Date(task.created_at).getTime(), tsIso: task.created_at,
+      });
+      if (task.claimed_at) {
+        evs.push({
+          kind: 'task', label: 'task claimed',
+          tsMs: new Date(task.claimed_at).getTime(), tsIso: task.claimed_at,
+        });
+      }
+    }
+    for (const log of this.logs()) {
+      evs.push({
+        kind: 'step', label: `step ${log.step_name} started`,
+        tsMs: new Date(log.created_at).getTime(), tsIso: log.created_at,
+      });
+    }
+    for (const q of this.qa()) {
+      evs.push({
+        kind: 'qa', label: `QA emitted (step ${q.step_name})`,
+        tsMs: new Date(q.created_at).getTime(), tsIso: q.created_at,
+      });
+      if (q.answered_at) {
+        evs.push({
+          kind: 'qa', label: `QA ${q.status} (step ${q.step_name})`,
+          tsMs: new Date(q.answered_at).getTime(), tsIso: q.answered_at,
+        });
+      }
+    }
+    for (const rep of this.reports()) {
+      evs.push({
+        kind: 'report', label: `report \u201c${rep.title}\u201d`,
+        tsMs: new Date(rep.created_at).getTime(), tsIso: rep.created_at,
+      });
+    }
+    if (task?.completed_at) {
+      evs.push({
+        kind: task.state === 'failed' || task.state === 'cancelled' ? 'merge' : 'merge',
+        label: task.state === 'failed' ? 'task failed'
+             : task.state === 'cancelled' ? 'task cancelled'
+             : 'task completed (merged)',
+        tsMs: new Date(task.completed_at).getTime(), tsIso: task.completed_at,
+      });
+    }
+    if (evs.length === 0) return { kind: 'task', label: 'no events yet', ts: '—' };
+    evs.sort((a, b) => a.tsMs - b.tsMs);
+    // Find last event with tsMs <= t
+    let pick: Ev = evs[0];
+    for (const ev of evs) {
+      if (ev.tsMs <= t) pick = ev;
+      else break;
+    }
+    return { kind: pick.kind, label: pick.label, ts: new Date(pick.tsIso).toLocaleTimeString() };
   });
 
   onScrubStart(): void {
