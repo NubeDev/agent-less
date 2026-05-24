@@ -3,6 +3,7 @@ pub mod local_source;
 pub mod orchestra_source;
 pub mod pipeline;
 pub mod prompt;
+pub mod qa_config;
 pub mod scheduler;
 pub mod spawner;
 pub mod step_profile;
