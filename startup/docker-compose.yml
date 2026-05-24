@@ -80,5 +80,44 @@ services:
       api:
         condition: service_healthy
 
+  # ── Forgejo (Git + CI) ──────────────────────────────────────────────
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:11
+    environment:
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__database__PATH: /data/gitea/forgejo.db
+      FORGEJO__server__ROOT_URL: http://localhost:3030/
+      FORGEJO__server__HTTP_PORT: "3000"
+      FORGEJO__server__DOMAIN: localhost
+      FORGEJO__service__DISABLE_REGISTRATION: "false"
+      FORGEJO__actions__ENABLED: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      # Allow webhooks to call back to the host on the docker bridge IP.
+      # Required for /v1/webhooks/forgejo/{id} delivery from the container.
+      FORGEJO__webhook__ALLOWED_HOST_LIST: "*"
+    ports:
+      - "3030:3000"
+      - "2222:22"
+    volumes:
+      - forgejo-data:/data
+
+  forgejo-runner:
+    image: code.forgejo.org/forgejo/runner:6.2.1
+    depends_on:
+      - forgejo
+    environment:
+      FORGEJO_SECRET: ${FORGEJO_RUNNER_SECRET:-}
+    entrypoint: >
+      sh -c "forgejo-runner create-runner-file --connect
+      --instance http://forgejo:3000
+      --secret $$FORGEJO_SECRET
+      --name local-runner &&
+      forgejo-runner daemon --config /etc/forgejo-runner/config.yaml"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./forgejo-runner-config.yaml:/etc/forgejo-runner/config.yaml:ro
+
 volumes:
   pgdata:
+  forgejo-data:

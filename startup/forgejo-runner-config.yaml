@@ -1,0 +1,16 @@
+log:
+  level: info
+runner:
+  labels:
+    - "docker:docker://catthehacker/ubuntu:act-latest"
+    - "ubuntu-latest:docker://catthehacker/ubuntu:act-latest"
+    - "ubuntu-22.04:docker://catthehacker/ubuntu:act-22.04"
+cache:
+  enabled: true
+container:
+  network: bridge
+  privileged: false
+  valid_volumes: []
+  docker_host: "unix:///var/run/docker.sock"
+host:
+  workdir_parent: ""

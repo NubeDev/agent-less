@@ -19,12 +19,10 @@ you will have:
 
 Tested 2026-05-24 on `main`.
 
-> One thing this demo **does not** exercise: the `/pipelines` page.
-> That's the **CI runs** surface (GitHub Actions / Forgejo Actions),
-> not the agent step pipeline. CI integration requires a real remote,
-> webhooks, and Actions runners — outside the scope of a single-host
-> demo. The agent step pipeline is what `/playbooks` represents and
-> is exercised end-to-end below.
+> The CI surface (`/pipelines`, `/integrations`) is covered by an
+> add-on script — see [§ 4.5](#45-forgejo-ci-add-on) below. It
+> requires the local Forgejo + runner stack started by
+> `startup/docker-compose.yml`.
 
 ---
 
@@ -136,8 +134,8 @@ you understand what the agent's context assembler will pull from:
 
 > **`/pipelines` vs `/playbooks` — answered:** `/playbooks` is the
 > agent step pipeline (this demo). `/pipelines` is CI run history
-> from GitHub/Forgejo Actions and requires an integration to be
-> configured under `/integrations`. The demo doesn't touch CI.
+> from GitHub/Forgejo Actions — wired up in [§ 4.5](#45-forgejo-ci-add-on)
+> using the local Forgejo + runner stack.
 
 ### You could also have created everything from the UI
 
@@ -185,6 +183,63 @@ INFO spawning claude -p ...
 ```
 
 Leave it running. Switch back to the browser.
+
+---
+
+## 4.5. Forgejo CI add-on
+
+This is an **optional but recommended** add-on that lights up
+`/pipelines` and `/integrations` using a local Forgejo + Actions
+runner. It runs independently of the orchestra and the task pipeline
+above.
+
+### Prereqs
+
+- The local Forgejo + runner are up (started by `startup/docker-compose.yml`).
+- You have a Forgejo PAT for the `diraigent` user — at the default
+  install that token is shown to you once after creation.
+- The runner is started with the **shipped labels config** at
+  `startup/forgejo-runner-config.yaml` (`docker`, `ubuntu-latest`,
+  `ubuntu-22.04`). If the runner came up with empty labels it can't
+  pick up jobs — see [§ 10 troubleshooting](#10-troubleshooting).
+- Forgejo's `[webhook] ALLOWED_HOST_LIST = *` is set, otherwise
+  Forgejo refuses to deliver to `localhost`/`172.17.0.1`.
+
+### Run it
+
+```bash
+. /tmp/diraigent-demo/state.env       # gives us $PROJ + $DEMO
+FORGEJO_TOKEN=<your-pat> bash scripts/forgejo-ci-demo.sh
+```
+
+What the script does:
+
+1. Creates the Forgejo repo `diraigent/web-demo` (idempotent).
+2. Adds `.forgejo/workflows/ci.yml` (a minimal `cargo check` job) and
+   pushes the demo project to Forgejo.
+3. Registers the Forgejo integration via `POST /v1/{proj}/integrations/forgejo`
+   — the same endpoint the **/pipelines/forgejo-setup** UI uses.
+4. Configures a Forgejo webhook on the repo, rewriting the URL to
+   `http://172.17.0.1:3100/...` so the Forgejo container can reach
+   the host's API.
+5. Pushes an empty commit to trigger the runner.
+6. Waits ~25s and calls `POST /v1/{proj}/forgejo/sync` to pull
+   workflow runs into Diraigent (the manual polling fallback —
+   needed because Forgejo 11 does not emit `workflow_run` webhook
+   events that the receiver listens for; push webhooks still deliver
+   for status surfaces).
+
+### Verify in the UI
+
+| Page | What to see |
+|---|---|
+| `/integrations` | One Forgejo integration card for the web-demo project |
+| `/pipelines` | One or more `build` runs, status = `failure` (the runner has Rust but the workflow body is intentionally light) |
+| Click a run | Drill into job + step detail |
+| <http://localhost:3030/diraigent/web-demo/actions> | Forgejo's native view of the same runs |
+
+Re-running `scripts/forgejo-ci-demo.sh` is idempotent (reuses the
+existing integration/webhook, just pushes a fresh commit and syncs).
 
 ---
 
@@ -431,18 +486,17 @@ Cross-referenced to [IMPROVEMENT.md](../../IMPROVEMENT.md) and
 | `agent-cli` `DIRAIGENT_TASK_ID` stamping on knowledge/observation/decision | If a step posts new knowledge mid-task, it's auto-tagged with `task_id` so `/knowledge?task_id=<id>` filters work |
 | Audit of every QA event | `/audit` shows `created`, `ai_answered`/`human_answered`, `resolved` |
 
-The nav surfaces touched (10 of 24):
+The nav surfaces touched (12 of 24):
 
 `/work` · `/quick/:id` · `/advanced/:id` · `/review` · `/knowledge` ·
 `/decisions` · `/observations` · `/playbooks` · `/agents` · `/audit` ·
-`/reports` · `/verifications` · `/source` · `/git`
+`/reports` · `/verifications` · `/source` · `/git` ·
+`/pipelines`* · `/integrations`*  (\* via the [§ 4.5](#45-forgejo-ci-add-on) add-on)
 
 Not touched on purpose:
 
 | Page | Why not |
 |---|---|
-| `/pipelines` | CI runs — needs GitHub/Forgejo Actions integration, out of scope |
-| `/integrations` | No external service in the demo |
 | `/webhooks` | No outbound delivery target |
 | `/chat` | Free-form chat surface, not part of the task pipeline |
 | `/goals` | The demo has one task; goals group tasks |
@@ -485,6 +539,9 @@ rebuilt from scratch.
 | Sentinel ignored, task merges without QA | Nonce mismatch, or sentinel not at column 0 | Tail orchestra log for `qa_nonce mismatch`; the playbook prompt explicitly templates `{{qa_nonce}}` — don't edit |
 | AI responder always escalates | `min_confidence` too high, or model didn't self-report `<confidence>` | Lower `qa.min_confidence` in `web-with-qa.yaml` |
 | Verifications page empty after AllDone | `extra_test_cmd` didn't run | Worktree must exist; check `task.context.verifications.extra_test_cmd` isn't empty |
+| Forgejo runner logs `with labels: []` and never picks up jobs | Runner registered without labels | Stop the runner, restart with `--config /etc/forgejo-runner/config.yaml` pointing at `startup/forgejo-runner-config.yaml` (see compose file) |
+| Forgejo logs `webhook can only call allowed HTTP servers` | `ALLOWED_HOST_LIST` blocks localhost / docker bridge IP | Append `[webhook]\nALLOWED_HOST_LIST = *` to `/data/gitea/conf/app.ini` in the Forgejo container and restart it |
+| `/pipelines` empty after a push | Forgejo 11 doesn't emit `workflow_run` events the receiver routes on | Call `POST /v1/{proj}/forgejo/sync` (the CI add-on does this automatically); push webhooks still deliver for repo events |
 
 ---
 
@@ -498,7 +555,8 @@ rebuilt from scratch.
 - **Mutate the playbook YAML live** — drop a new step into
   `.diraigent/playbooks/web-with-qa.yaml` and re-run; orchestra
   rereads on each task claim.
-- **Set up `/integrations`** (GitHub PAT, Forgejo token) to populate
-  `/pipelines` and start seeing CI runs alongside agent runs.
+- **Schedule periodic `forgejo/sync`** — a cron job hitting
+  `POST /v1/{proj}/forgejo/sync` every minute keeps `/pipelines`
+  fresh without depending on workflow_run webhook events.
 - See [diraigent-overview.md](../../diraigent-overview.md) for the
   full architecture, surface map, and before-vs-after delta.
