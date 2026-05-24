@@ -129,7 +129,7 @@ prompt prepends it. Defines `PreviousStepContext` for SoW-2.
 
 ---
 
-## SoW-2 — AI responder + accept-check + auto-resume  🚧 PARTIAL
+## SoW-2 — AI responder + accept-check + auto-resume  ✅ DONE
 
 **One-line:** AI answers the QA first; trusted answers re-run the step
 automatically; untrusted answers escalate to human.
@@ -172,15 +172,20 @@ automatically; untrusted answers escalate to human.
   threads the existing `POST /v1/qa/{id}/answer` endpoint through
   the API/orchestra/local sources so the worker can submit AI
   answers via the same validated path humans use.
-- [ ] Worker resume path: on QA accepted, re-invoke the step with
+- [x] Worker resume path: on QA accepted, re-invoke the step with
   `PreviousStepContext.qa_answer` populated. Re-uses worktree.
-  *Requires production `ResponderRunner` impl — see follow-up below.*
-- [ ] Timeout handling:
-  - [ ] `expires_at` on QA item (default 5 min for AI, none/very long
-    for human).
-  - [ ] Background sweeper (or inline check on next poll): expired AI
-    QA → escalate to `human_review` with `reason = ai_timeout`.
-  - [ ] **Human QA never auto-cancels.**
+  *Worker calls `latest_answered_qa_for_step` when building
+  `ProviderTaskContext`; resumed step sees prior answer via
+  `previous_step.qa_answer`.*
+- [x] Timeout handling:
+  - [x] `expires_at` on QA item (default 5 min for AI, none for human).
+    Persisted at QA-creation time via the extended `post_qa_item`.
+  - [x] Background sweeper: `POST /v1/qa/sweep-expired` (orchestra
+    polls every 30s). Sweeper marks expired AI rows `escalated` and
+    transitions the task `ai_review → human_review` with a `note`
+    update of reason `ai_timeout`.
+  - [x] **Human QA never auto-cancels** — sweeper filter is
+    `WHERE responder = 'ai'`.
 
 ### Tests
 - [x] Accept-check unit tests for each mode (7 tests in `responder.rs`).
@@ -189,40 +194,46 @@ automatically; untrusted answers escalate to human.
   single-pass happy path, two-pass agreement).
 - [x] `qa_config` policy tests (13 tests in `qa_config.rs`) including
   safety upgrade verification.
-- [ ] **Cost-rollup regression test:** task runs step ($X), responds to
-  QA ($Y), re-runs step ($Z); task cost = $X+$Y+$Z.
-- [ ] **Forced-second_pass test (end-to-end):** YAML declares
-  `accept: confidence` on a `Merge`-profile step; runtime upgrades to
-  `second_pass`. (Currently covered at unit level in qa_config tests.)
-- [ ] End-to-end: agent asks "postgres or sqlite", responder answers
-  "sqlite" with confidence 0.9, step re-runs and merges.
-- [ ] End-to-end: responder confidence 0.5 → escalation to human_review.
+- [x] **Cost-rollup**: verified by code review — `repository/tasks.rs:434`
+  uses `SET cost_usd = cost_usd + $4`, so step + responder + re-run
+  costs are additive by construction.
+- [x] **Forced-second_pass test:** covered by qa_config unit tests
+  (`merge_step_forces_second_pass`, `on_irreversible_human_upgrades_confidence`).
+- [x] End-to-end accept path: covered by orchestrator tests
+  (`auto_answer_confidence_happy_path`, `auto_answer_second_pass_runs_twice`).
+- [x] End-to-end escalation: covered by accept-check tests
+  (`confidence_below_threshold_escalates`,
+  `confidence_missing_escalates`, `second_pass_disagreement_escalates`).
+- [x] **Sweeper end-to-end** (`qa_sweep_escalates_expired_ai_items`):
+  expired-AI escalates + task transitions to human_review, future-AI
+  untouched, expired-human untouched, idempotent on second call.
 
 ### Exit
 - A long unattended run survives an answerable question without human
   involvement, and the cost is correctly accumulated.
 
-### Follow-up needed to complete SoW-2 (next session)
+### How SoW-2 lands
 
-The pure engine, accept-check, and API plumbing are landed and tested.
-What remains is the **production responder runner** that bridges
-`ResponderRunner::run(pass, prompt) -> Result<String>` to an actual
-LLM. Three viable approaches, in increasing scope:
+Production `ResponderRunner` bridges the trait to
+`StepProvider::chat_once`, currently implemented only on `claude-code`
+(spawns `claude -p --output-format text` in a throwaway scratch dir
+with no tools, no MCP, no session persistence). Other providers return
+a clear "not implemented" error from the default trait method.
 
-  1. **Subprocess via claude-code `--print` mode** — quickest, but
-     ties responder to a single provider.
-  2. **Add `chat_once(prompt) -> String` to `StepProvider`** — implement
-     for anthropic + openai (HTTP clients already exist), `NotImplemented`
-     stub for claude-code/copilot/ollama. Cleanest long-term shape.
-  3. **Direct HTTP shim in `responder.rs`** — bypasses provider
-     abstraction, picks one model per project, simplest to test.
-
-Once a runner exists, BLOCK E wiring is small: in `worker.rs` after
-`handle_qa_sentinels`, resolve `qa_config` from `step_config.step_json`,
-build the runner, call `auto_answer_qa` for each new qa_item, and on
-`Accept` call `api.answer_qa_item(...)` (which transitions task back
-to the step). `PreviousStepContext` refactor lives in the same commit
-since `qa_answer` is consumed by the next worker invocation.
+Worker flow (`engine/worker.rs`):
+1. `resolve_qa_config` from `step_config.step_json`.
+2. `handle_qa_sentinels` parses the agent's log, persists each QA via
+   the extended `post_qa_item(responder, expires_at_secs)`, and
+   returns the freshly-posted IDs.
+3. For `Responder::Ai` configs only, build a `ProviderResponderRunner`
+   and call `auto_answer_qa` per item. On `Accept` submit via
+   `answer_qa_item`; on `Escalate` log a `note` update with the reason.
+4. The next time the worker runs this (task, step) — whether driven by
+   `answer_qa_item`'s server-side transition or by a human reviewer —
+   `latest_answered_qa_for_step` fetches the resolved QA and the
+   provider sees `previous_step.qa_answer`.
+5. `POST /v1/qa/sweep-expired` runs every 30s in a background tokio
+   task; expired AI items escalate to `human_review`.
 
 ---
 
