@@ -11,8 +11,11 @@ import { ReviewSseService } from '../../core/services/review-sse.service';
 import { NavBadgeService } from '../../core/services/nav-badge.service';
 import { ObservationsPage } from '../observations/observations';
 import { DecisionsPage } from '../decisions/decisions';
+import { QaHistoryPanelComponent } from '../../shared/components/qa-history-panel/qa-history-panel';
+import { QaApiService, SpQaItem } from '../../core/services/qa-api.service';
+import { firstValueFrom } from 'rxjs';
 
-export type ReviewCategory = 'human_review' | 'blocker' | 'conflict';
+export type ReviewCategory = 'human_review' | 'ai_review' | 'blocker' | 'conflict';
 
 export interface ReviewTask {
   task: SpTask;
@@ -23,12 +26,13 @@ export interface ReviewTask {
   expanded: boolean;
   category: ReviewCategory;
   gitStatus: TaskBranchStatus | null;
+  qaItems: SpQaItem[];
 }
 
 @Component({
   selector: 'app-review',
   standalone: true,
-  imports: [TranslocoModule, FormsModule, DatePipe, SlicePipe, ObservationsPage, DecisionsPage],
+  imports: [TranslocoModule, FormsModule, DatePipe, SlicePipe, ObservationsPage, DecisionsPage, QaHistoryPanelComponent],
   template: `
     <div class="p-3 sm:p-6" *transloco="let t">
       <!-- Header -->
@@ -126,6 +130,10 @@ export interface ReviewTask {
                       @if (item.category === 'human_review') {
                         <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-ctp-yellow/15 text-ctp-yellow">
                           {{ t('review.awaitingReview') }}
+                        </span>
+                      } @else if (item.category === 'ai_review') {
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-ctp-mauve/15 text-ctp-mauve">
+                          AI review
                         </span>
                       } @else if (item.category === 'blocker') {
                         <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-ctp-red/15 text-ctp-red">
@@ -255,6 +263,10 @@ export interface ReviewTask {
               <!-- Expanded details -->
               @if (item.expanded) {
                 <div class="border-t border-border px-5 py-4 space-y-4 bg-bg">
+                  <!-- QA history (ai_review + human_review) -->
+                  @if (item.qaItems.length > 0) {
+                    <app-qa-history-panel [items]="item.qaItems" (answer)="onQaAnswer(item, $event)" />
+                  }
                   <!-- Blocker updates -->
                   @if (item.blockerUpdates.length > 0) {
                     <div>
@@ -342,6 +354,7 @@ export class ReviewPage implements OnDestroy {
   private tasksApi = inject(TasksApiService);
   private diraigentApi = inject(DiraigentApiService);
   private gitApi = inject(GitApiService);
+  private qaApi = inject(QaApiService);
   private reviewSse = inject(ReviewSseService);
   badges = inject(NavBadgeService);
 
@@ -503,6 +516,19 @@ export class ReviewPage implements OnDestroy {
     return (ctx?.['spec'] as string) ?? (ctx?.['description'] as string) ?? '';
   }
 
+  async onQaAnswer(item: ReviewTask, evt: { qa: SpQaItem; answer: string }): Promise<void> {
+    try {
+      const next_step = (evt.qa.metadata?.['next_step'] as string) ?? evt.qa.step_name;
+      await firstValueFrom(this.qaApi.answer(evt.qa.id, { answer: evt.answer, target_step: next_step }));
+      const fresh = await firstValueFrom(this.qaApi.list({ task_id: item.task.id, limit: 50 }));
+      this.reviewItems.update(items =>
+        items.map(i => (i.task.id === item.task.id ? { ...i, qaItems: fresh } : i)),
+      );
+    } catch {
+      // Surface via existing toast/badge in a future pass; keep silent here to avoid noise.
+    }
+  }
+
   private fetchReviewTasks() {
     return this.diraigentApi.getProjects().pipe(
       catchError(() => of([] as import('../../core/services/diraigent-api.service').DgProject[])),
@@ -515,16 +541,23 @@ export class ReviewPage implements OnDestroy {
                 catchError(() => of({ data: [] as SpTask[], total: 0, limit: 100, offset: 0, has_more: false })),
                 map(resp => resp.data),
               ),
+              aiReviewTasks: this.tasksApi.listForProject(project.id, { state: 'ai_review', limit: 100 }).pipe(
+                catchError(() => of({ data: [] as SpTask[], total: 0, limit: 100, offset: 0, has_more: false })),
+                map(resp => resp.data),
+              ),
               blockerTasks: this.tasksApi.listTasksWithBlockers(project.id).pipe(
                 catchError(() => of([] as SpTask[])),
               ),
             }).pipe(
-              switchMap(({ reviewTasks, blockerTasks }) => {
-                // Deduplicate: tasks in human_review take priority
+              switchMap(({ reviewTasks, aiReviewTasks, blockerTasks }) => {
+                // Deduplicate: human_review > ai_review > blocker.
                 const reviewIds = new Set(reviewTasks.map(t => t.id));
-                const uniqueBlockerTasks = blockerTasks.filter(t => !reviewIds.has(t.id));
+                const uniqueAi = aiReviewTasks.filter(t => !reviewIds.has(t.id));
+                const aiIds = new Set(uniqueAi.map(t => t.id));
+                const uniqueBlockerTasks = blockerTasks.filter(t => !reviewIds.has(t.id) && !aiIds.has(t.id));
                 const allTasks: { task: SpTask; category: ReviewCategory }[] = [
                   ...reviewTasks.map(task => ({ task, category: 'human_review' as ReviewCategory })),
+                  ...uniqueAi.map(task => ({ task, category: 'ai_review' as ReviewCategory })),
                   ...uniqueBlockerTasks.map(task => ({ task, category: 'blocker' as ReviewCategory })),
                 ];
 
@@ -539,8 +572,11 @@ export class ReviewPage implements OnDestroy {
                       gitStatus: this.gitApi.taskBranchStatusForProject(project.id, task.id).pipe(
                         catchError(() => of(null as TaskBranchStatus | null)),
                       ),
+                      qaItems: this.qaApi.list({ task_id: task.id, limit: 50 }).pipe(
+                        catchError(() => of([] as SpQaItem[])),
+                      ),
                     }).pipe(
-                      map(({ updates, gitStatus }) => ({
+                      map(({ updates, gitStatus, qaItems }) => ({
                         task,
                         project,
                         artifacts: updates.filter(u => u.kind === 'artifact'),
@@ -549,6 +585,7 @@ export class ReviewPage implements OnDestroy {
                         expanded: false,
                         category: gitStatus?.has_conflict ? 'conflict' as ReviewCategory : category,
                         gitStatus,
+                        qaItems,
                       })),
                     ),
                   ),
