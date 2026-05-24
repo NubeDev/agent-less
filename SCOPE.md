@@ -129,42 +129,52 @@ prompt prepends it. Defines `PreviousStepContext` for SoW-2.
 
 ---
 
-## SoW-2 — AI responder + accept-check + auto-resume  ⬜
+## SoW-2 — AI responder + accept-check + auto-resume  🚧 PARTIAL
 
 **One-line:** AI answers the QA first; trusted answers re-run the step
 automatically; untrusted answers escalate to human.
 
 ### Verify first
-- [ ] Confirm worktree reuse (`git/worktree.rs:60`) survives a step
+- [x] Confirm worktree reuse (`git/worktree.rs:60`) survives a step
   re-run without manual intervention. Write a smoke test if uncertain.
-- [ ] Confirm cost rollup in `worker.rs:640` area is additive across
+  *Verified: `worktree.rs:60-62` reuses existing worktree by path.*
+- [x] Confirm cost rollup in `worker.rs:640` area is additive across
   multiple step runs for the same task. **If it resets, fix that as a
-  prerequisite.**
+  prerequisite.** *Verified: `repository/tasks.rs:434` uses
+  `SET cost_usd = cost_usd + $4` (additive).*
 
 ### Build
-- [ ] Per-step `qa:` YAML schema parser in `repo_playbooks.rs`:
-  validate `accept ∈ {confidence, second_pass, always_human, always_ai}`,
+- [x] Per-step `qa:` YAML schema parser in
+  `apps/orchestra/src/engine/qa_config.rs` (new): validate
+  `accept ∈ {confidence, second_pass, always_human, always_ai}`,
   `min_confidence ∈ [0.0, 1.0]`, `responder ∈ {ai, human}`,
   `on_irreversible ∈ {human, ai}`.
-- [ ] **Defaults policy enforcement:**
+- [x] **Defaults policy enforcement:**
   - No `qa:` block on a step → behave as `responder: human` (safe rollout;
     existing playbooks unchanged).
   - `StepProfile::Merge` OR `on_irreversible: human` → force
     `accept: second_pass` at runtime even if YAML says `confidence`.
-    Log the upgrade.
-- [ ] Responder driver in
-  `apps/orchestra/src/engine/responder.rs` (new): given a QA item, builds
-  a readonly-profile provider call. **Must not** include shell/git/write
-  tools; reuse the existing tool-preset gate, do not bypass it.
-- [ ] Accept-check implementation:
-  - [ ] `confidence`: parse `<confidence>0.NN</confidence>` from
+    Log the upgrade. (`forced_second_pass: true` flag set.)
+- [x] Responder driver in
+  `apps/orchestra/src/engine/responder.rs` (new): pure parser
+  (`parse_responder_output`) + pure `accept_check` + `ResponderRunner`
+  trait + `auto_answer_qa` orchestrator. The trait abstracts the LLM
+  call so production wiring can land separately.
+- [x] Accept-check implementation:
+  - [x] `confidence`: parse `<confidence>0.NN</confidence>` from
     responder output; accept iff `>= min_confidence` (default 0.85).
-  - [ ] `second_pass`: two responder calls with different temperatures
-    (and different models if configured per project); accept iff
-    answers match (exact match for `options`, LLM-judge for free text).
-  - [ ] `always_human` / `always_ai`: trivial.
+  - [x] `second_pass`: two responder calls; accept iff
+    `normalize(primary) == normalize(secondary)` (case-insensitive
+    whitespace-collapsed). LLM-judge for free-text divergence
+    deferred to a follow-up SoW.
+  - [x] `always_human` / `always_ai`: trivial.
+- [x] `TaskSource::answer_qa_item(qa_id, answer, target_step)` —
+  threads the existing `POST /v1/qa/{id}/answer` endpoint through
+  the API/orchestra/local sources so the worker can submit AI
+  answers via the same validated path humans use.
 - [ ] Worker resume path: on QA accepted, re-invoke the step with
   `PreviousStepContext.qa_answer` populated. Re-uses worktree.
+  *Requires production `ResponderRunner` impl — see follow-up below.*
 - [ ] Timeout handling:
   - [ ] `expires_at` on QA item (default 5 min for AI, none/very long
     for human).
@@ -173,11 +183,17 @@ automatically; untrusted answers escalate to human.
   - [ ] **Human QA never auto-cancels.**
 
 ### Tests
-- [ ] Accept-check unit tests for each mode.
+- [x] Accept-check unit tests for each mode (7 tests in `responder.rs`).
+- [x] Parser tolerance tests (4 tests in `responder.rs`).
+- [x] Orchestrator tests via `FakeRunner` (3 tests: short-circuit,
+  single-pass happy path, two-pass agreement).
+- [x] `qa_config` policy tests (13 tests in `qa_config.rs`) including
+  safety upgrade verification.
 - [ ] **Cost-rollup regression test:** task runs step ($X), responds to
   QA ($Y), re-runs step ($Z); task cost = $X+$Y+$Z.
-- [ ] **Forced-second_pass test:** YAML declares `accept: confidence` on a
-  `Merge`-profile step; runtime upgrades to `second_pass`.
+- [ ] **Forced-second_pass test (end-to-end):** YAML declares
+  `accept: confidence` on a `Merge`-profile step; runtime upgrades to
+  `second_pass`. (Currently covered at unit level in qa_config tests.)
 - [ ] End-to-end: agent asks "postgres or sqlite", responder answers
   "sqlite" with confidence 0.9, step re-runs and merges.
 - [ ] End-to-end: responder confidence 0.5 → escalation to human_review.
@@ -185,6 +201,28 @@ automatically; untrusted answers escalate to human.
 ### Exit
 - A long unattended run survives an answerable question without human
   involvement, and the cost is correctly accumulated.
+
+### Follow-up needed to complete SoW-2 (next session)
+
+The pure engine, accept-check, and API plumbing are landed and tested.
+What remains is the **production responder runner** that bridges
+`ResponderRunner::run(pass, prompt) -> Result<String>` to an actual
+LLM. Three viable approaches, in increasing scope:
+
+  1. **Subprocess via claude-code `--print` mode** — quickest, but
+     ties responder to a single provider.
+  2. **Add `chat_once(prompt) -> String` to `StepProvider`** — implement
+     for anthropic + openai (HTTP clients already exist), `NotImplemented`
+     stub for claude-code/copilot/ollama. Cleanest long-term shape.
+  3. **Direct HTTP shim in `responder.rs`** — bypasses provider
+     abstraction, picks one model per project, simplest to test.
+
+Once a runner exists, BLOCK E wiring is small: in `worker.rs` after
+`handle_qa_sentinels`, resolve `qa_config` from `step_config.step_json`,
+build the runner, call `auto_answer_qa` for each new qa_item, and on
+`Accept` call `api.answer_qa_item(...)` (which transitions task back
+to the step). `PreviousStepContext` refactor lives in the same commit
+since `qa_answer` is consumed by the next worker invocation.
 
 ---
 
