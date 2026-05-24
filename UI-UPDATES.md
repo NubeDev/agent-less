@@ -331,17 +331,25 @@ fully land. Each is non-blocking for UI-4/5/6 \u2014 the UI degrades
 gracefully (filters happen client-side on the page payload, empty
 panels show "no data yet").
 
-1. **Knowledge `task_id` query param** \u2014 the backend list endpoint
-   accepts `category` + `tag` only. The new Knowledge filter scopes
-   to `metadata.task_id` substring **in memory** on the current page
-   payload, so it can't reach beyond the loaded set. Add `task_id`
-   to `GET /v1/{project}/knowledge` to make it authoritative.
+1. **Knowledge `task_id` query param** — ✅ resolved.
+   `KnowledgeFilters` carries `task_id: Option<String>`, the SQL
+   predicate in `KNOWLEDGE_FILTERS_WHERE` adds
+   `($4::text IS NULL OR metadata->>'task_id' = $4)`, and
+   `list_knowledge` binds `&f.task_id`. The Angular
+   `KnowledgeApiService.list(category, tag, taskId)` forwards the
+   param. Authoritative server-side filter; in-memory scoping is
+   no longer required.
 
-2. **Reports filters** \u2014 the backend list endpoint accepts `status`
-   only. The new `kind`, `task_id`, and `task-run-only` filters all
-   run in memory. Add `kind` and `task_id` params to
-   `GET /v1/{project}/reports`. `outcome` filter requires reports to
-   carry a derived outcome field (not present today).
+2. **Reports filters** — ✅ resolved. `ReportFilters` carries
+   `status`, `kind`, `task_id: Option<Uuid>`, and `task_run_only:
+   Option<bool>`; `REPORT_FILTERS_WHERE` and the bind in
+   `list_reports` thread all four into SQL. The Angular
+   `ReportsApiService.list({ status, kind, task_id })` already
+   uses these — advanced-detail loads reports with
+   `{ task_id: this.taskId }` and gets a server-filtered slice.
+   `outcome` is still not a column on `report`, so any
+   outcome-style filter remains client-side until reports gain a
+   derived outcome field.
 
 3. **QA audit events** — ✅ resolved. The QA lifecycle already
    wrote audit rows for `created` / `answered` / `escalated` /
