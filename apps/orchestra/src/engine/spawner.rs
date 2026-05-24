@@ -108,6 +108,34 @@ pub async fn poll_ready_tasks_with_projects(
     }
 }
 
+/// UI-gap #6: extract per-task model + budget overrides from
+/// `task.context`. Pure helper so the precedence rules can be unit
+/// tested without spinning up the full spawner.
+///
+/// Model precedence: `context.model_override` (UI canonical, UI-4) >
+/// `context.model` (legacy). Empty / non-string values are dropped.
+///
+/// Budget cap: `context.budget_usd_cap` if finite and `> 0`; the
+/// caller clamps the resolved step budget against this cap and never
+/// raises it.
+pub(crate) fn task_overrides_from_context(
+    task: Option<&serde_json::Value>,
+) -> (Option<String>, Option<f64>) {
+    let Some(task) = task else {
+        return (None, None);
+    };
+    let ctx = &task["context"];
+    let model = ctx["model_override"]
+        .as_str()
+        .or_else(|| ctx["model"].as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let budget_cap = ctx["budget_usd_cap"]
+        .as_f64()
+        .filter(|v| v.is_finite() && *v > 0.0);
+    (model, budget_cap)
+}
+
 pub async fn spawn_worker(
     api: &Arc<dyn TaskSource>,
     config: &Config,
@@ -259,18 +287,26 @@ pub async fn spawn_worker(
         }
     }
 
-    // Per-task model override from task context
-    let task_model = task_data
-        .as_ref()
-        .and_then(|t| t["context"]["model"].as_str().map(|s| s.to_string()));
+    // Per-task model + budget overrides from task.context (UI-4
+    // advanced overrides). Extracted to a pure helper so we can unit-test
+    // the precedence rules without standing up a full spawn.
+    let (task_model, task_budget_cap) = task_overrides_from_context(task_data.as_ref());
 
     // Build step-specific config from playbook JSONB with hardcoded fallbacks
-    let step_config = worker::StepConfig::for_step(
+    let mut step_config = worker::StepConfig::for_step(
         &step_name,
         step_json.as_ref(),
         task_model.as_deref(),
         config.worker_model.as_deref(),
     );
+
+    // Apply per-task budget cap as a clamp (task overrides downward only).
+    if let Some(cap) = task_budget_cap {
+        step_config.budget = Some(match step_config.budget {
+            Some(b) if b > 0.0 => b.min(cap),
+            _ => cap,
+        });
+    }
 
     // Resolve git strategy from playbook metadata
     let git_strategy =
@@ -906,5 +942,74 @@ mod tests {
         let queue = lock_queue.lock().await;
         assert!(queue.contains_key(task_id));
         assert_eq!(queue[task_id].project_id, project_id);
+    }
+
+    // ── UI-gap #6: model_override + budget_usd_cap ────────────────
+
+    #[test]
+    fn task_overrides_none_when_missing_task() {
+        let (m, b) = task_overrides_from_context(None);
+        assert!(m.is_none());
+        assert!(b.is_none());
+    }
+
+    #[test]
+    fn task_overrides_none_when_context_empty() {
+        let task = serde_json::json!({"context": {}});
+        let (m, b) = task_overrides_from_context(Some(&task));
+        assert!(m.is_none());
+        assert!(b.is_none());
+    }
+
+    #[test]
+    fn task_overrides_model_canonical_wins_over_legacy() {
+        let task = serde_json::json!({
+            "context": {"model_override": "opus", "model": "sonnet"}
+        });
+        let (m, _) = task_overrides_from_context(Some(&task));
+        assert_eq!(m.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn task_overrides_model_legacy_used_when_canonical_absent() {
+        let task = serde_json::json!({"context": {"model": "sonnet"}});
+        let (m, _) = task_overrides_from_context(Some(&task));
+        assert_eq!(m.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn task_overrides_model_whitespace_canonical_dropped() {
+        let task = serde_json::json!({
+            "context": {"model_override": "   ", "model": "haiku"}
+        });
+        let (m, _) = task_overrides_from_context(Some(&task));
+        // Whitespace-only `model_override` is treated as a present-but-empty
+        // value and short-circuits the legacy fallback. UI cannot send this
+        // shape (the form trims before persisting), but we document the
+        // behaviour explicitly.
+        assert!(m.is_none());
+    }
+
+    #[test]
+    fn task_overrides_budget_cap_valid() {
+        let task = serde_json::json!({"context": {"budget_usd_cap": 7.5}});
+        let (_, b) = task_overrides_from_context(Some(&task));
+        assert_eq!(b, Some(7.5));
+    }
+
+    #[test]
+    fn task_overrides_budget_cap_rejects_zero_negative_and_non_finite() {
+        for v in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let task = serde_json::json!({"context": {"budget_usd_cap": v}});
+            let (_, b) = task_overrides_from_context(Some(&task));
+            assert!(b.is_none(), "expected None for {v}");
+        }
+    }
+
+    #[test]
+    fn task_overrides_budget_cap_ignored_when_non_numeric() {
+        let task = serde_json::json!({"context": {"budget_usd_cap": "5"}});
+        let (_, b) = task_overrides_from_context(Some(&task));
+        assert!(b.is_none());
     }
 }

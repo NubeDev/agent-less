@@ -374,9 +374,9 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ in progress: 3 of 12
-   fields shipped (`env`, `mcp`, `qa_override`); the other 9 are still
-   ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
+6. **Advanced-task overrides round-trip** — ⚠️ in progress: 5 of 12
+   fields shipped (`env`, `mcp`, `qa_override`, `model_override`,
+   `budget_usd_cap`); the other 7 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
    `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
    `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
    `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
@@ -395,8 +395,19 @@ panels show "no data yet").
      per-server-name into `step_config.mcp_servers`, accepting both
      wrapped (`{"mcpServers": {…}}`) and bare (`{"name": {…}}`)
      shapes.
+   - `model_override` (UI canonical) and the legacy `model` key →
+     `task_overrides_from_context` in
+     [engine/spawner.rs](apps/orchestra/src/engine/spawner.rs)
+     extracts the model string with canonical-wins precedence and
+     feeds it into `StepConfig::for_step`'s existing `task_model`
+     slot. Whitespace / empty values are dropped.
+   - `budget_usd_cap` → same helper extracts a finite, `> 0` cap;
+     the spawner clamps `step_config.budget` downward against it
+     (task can only lower the budget, never raise it). 8 unit
+     tests in `engine::spawner::tests` cover precedence + edge
+     cases (zero, negative, NaN, infinity, non-numeric).
 
-   All three reuse a single `api.get_task()` call up front; malformed
+   All five reuse a single `api.get_task()` call up front; malformed
    values degrade silently so the advanced UI can never block worker
    progress. 11 unit tests in `engine::worker::tests` cover the env
    and MCP paths (extract, filter-non-strings, malformed, canonical
@@ -413,7 +424,7 @@ panels show "no data yet").
    stores intent that the runtime silently discards. Remaining:
    `session_mode`, `preserve_worktree`, `knowledge.pin_ids`,
    `knowledge.exclude_tags`, `verifications.*`, `reports`,
-   `integrations_allowed`, `model_override`, `budget_usd_cap`.
+   `integrations_allowed`.
 
 ---
 
