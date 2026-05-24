@@ -186,7 +186,36 @@ pub async fn set_qa_outcome_for_task(
     Ok(res.rows_affected())
 }
 
-/// SoW-4 clean sweeper: for every resolved QA whose owning task has
+/// SoW gap #9: when a task is cancelled, cascade every still-`pending`
+/// QA on it to `resolved` with `metadata.cancellation_reason =
+/// "task_cancelled"`. The `answer` field is stamped with a marker
+/// string so the existing review UI renders a clear "no answer
+/// needed" entry instead of a perpetual pending. Idempotent: a second
+/// call is a no-op because rows are no longer `pending`.
+///
+/// Outcome is left at `'unknown'` deliberately — a cancelled task
+/// gives no signal about whether the QA itself was good or bad, and
+/// SoW-4 telemetry should not be polluted with cancellation noise.
+pub async fn resolve_pending_qa_for_cancelled_task(
+    pool: &PgPool,
+    task_id: Uuid,
+) -> Result<u64, AppError> {
+    let res = sqlx::query(
+        "UPDATE diraigent.task_qa_item
+         SET status      = 'resolved',
+             answer      = COALESCE(answer, '[task cancelled — no answer needed]'),
+             answered_at = COALESCE(answered_at, now()),
+             resolved_at = COALESCE(resolved_at, now()),
+             metadata    = metadata || jsonb_build_object('cancellation_reason', 'task_cancelled')
+         WHERE task_id = $1
+           AND status = 'pending'",
+    )
+    .bind(task_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// been `done` for at least `min_age_days` and still has
 /// `outcome = 'unknown'`, set the outcome to `resolved_clean`.
 ///

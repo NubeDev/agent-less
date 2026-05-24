@@ -495,3 +495,106 @@ async fn qa_outcome_sweep_clean() {
 
     app.cleanup().await;
 }
+
+/// SoW gap #9: cancelling a task must cascade still-pending QA items
+/// to `resolved` with a cancellation marker. Already-answered items
+/// must be left exactly as they were. Idempotent.
+#[tokio::test]
+async fn qa_cancelled_task_cascades_pending_to_resolved() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-cancel").await;
+    let task = app.create_task(project_id, "to be cancelled").await;
+    let task_id = task["id"].as_str().unwrap();
+    let task_uuid: uuid::Uuid = task_id.parse().unwrap();
+
+    // Pending QA (human-targeted, no expiry) — should be cascaded.
+    let pending: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder)
+         VALUES ($1, $2, 'implement', 'question', 'a?', 'human')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // Already-resolved QA — must remain untouched (answer + outcome).
+    let resolved: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder,
+              status, answer, answered_at, resolved_at, outcome)
+         VALUES ($1, $2, 'implement', 'question', 'b?', 'ai',
+                 'resolved', 'yes', now(), now(), 'resolved_clean')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // Cancel the task — backlog → cancelled is a valid transition.
+    let r = app
+        .send(post_json(
+            &format!("/v1/tasks/{task_id}/transition"),
+            json!({ "state": "cancelled" }),
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "cancel: {}", r.json);
+
+    // Pending should now be resolved with the cancellation marker.
+    let (status, answer, outcome, meta): (String, Option<String>, String, serde_json::Value) =
+        sqlx::query_as(
+            "SELECT status, answer, outcome, metadata
+             FROM diraigent.task_qa_item WHERE id = $1",
+        )
+        .bind(pending)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "resolved");
+    assert!(
+        answer.unwrap_or_default().contains("cancelled"),
+        "cancelled-marker answer expected"
+    );
+    assert_eq!(meta["cancellation_reason"].as_str(), Some("task_cancelled"));
+    // Outcome stays 'unknown' — cancellation gives no SoW-4 signal.
+    assert_eq!(outcome, "unknown");
+
+    // Already-resolved row must be byte-for-byte unchanged.
+    let (status, answer, outcome): (String, Option<String>, String) =
+        sqlx::query_as("SELECT status, answer, outcome FROM diraigent.task_qa_item WHERE id = $1")
+            .bind(resolved)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "resolved");
+    assert_eq!(answer.as_deref(), Some("yes"));
+    assert_eq!(outcome, "resolved_clean");
+
+    // Idempotency: re-cancelling (cancelled → backlog → cancelled) must
+    // be a no-op — the pending row already moved to resolved.
+    let _ = app
+        .send(post_json(
+            &format!("/v1/tasks/{task_id}/transition"),
+            json!({ "state": "backlog" }),
+        ))
+        .await;
+    let _ = app
+        .send(post_json(
+            &format!("/v1/tasks/{task_id}/transition"),
+            json!({ "state": "cancelled" }),
+        ))
+        .await;
+    let still: (String,) =
+        sqlx::query_as("SELECT status FROM diraigent.task_qa_item WHERE id = $1")
+            .bind(pending)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(still.0, "resolved");
+
+    app.cleanup().await;
+}

@@ -500,6 +500,22 @@ async fn transition_task(
         let _ = state.db.release_file_locks_for_task(task_id).await;
     }
 
+    // SoW gap #9: a cancelled task must not leave QA items perpetually
+    // pending. Cascade them to `resolved` with a cancellation marker
+    // so reviewers stop seeing phantom open questions on a dead task.
+    // Best-effort; failure is logged but does not block the transition.
+    if task.state == "cancelled" && old_state != "cancelled" {
+        match crate::repository::resolve_pending_qa_for_cancelled_task(&state.pool, task_id).await {
+            Ok(n) if n > 0 => {
+                tracing::info!(task_id = %task_id, count = n, "cancelled pending QA items");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(task_id = %task_id, error = %e, "failed to cascade pending QAs on task cancel");
+            }
+        }
+    }
+
     crate::metrics::record_task_transition(&old_state, &task.state);
 
     state.fire_event(
