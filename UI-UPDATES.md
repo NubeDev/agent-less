@@ -154,7 +154,7 @@ running and recent jobs.
 
 ---
 
-## UI-4 — Advanced job creation  ⬜
+## UI-4 — Advanced job creation  ☑
 
 **One-line:** a power-user "New job" form that exposes every knob the
 backend supports — per-task session control, QA policy, knowledge scope,
@@ -165,152 +165,214 @@ person who actually configured the project) need a single screen where
 they can opt into the new SoW-1/2/3/4 features per job, not per playbook.
 
 ### Verify first
-- [ ] Confirm `task.context` JSONB accepts arbitrary overrides today
+- [x] Confirm `task.context` JSONB accepts arbitrary overrides today
   (it does — used for `spec`, `files`, `test_cmd`, `acceptance_criteria`).
   Decide naming: `context.qa_override`, `context.session_mode`, etc.
-- [ ] Confirm the API exposes: playbook YAML for selected project
+- [x] Confirm the API exposes: playbook YAML for selected project
   (read-only), knowledge entries list, verifications list, reports
   list. Map each to its existing route. File missing endpoints as
-  prerequisite tasks.
+  prerequisite tasks. (See `Known Gaps`.)
 
 ### Build — form sections (single page, collapsible groups)
 
-- [ ] **What** (mirrors `/quick`): spec, files, acceptance criteria.
+- [x] **What** (mirrors `/quick`): spec, files, acceptance criteria.
   Pre-expanded.
-- [ ] **Playbook**
-  - [ ] Dropdown of project's playbooks.
-  - [ ] **Step preview** under the dropdown: render the chosen
+- [x] **Playbook**
+  - [x] Dropdown of project's playbooks.
+  - [x] **Step preview** under the dropdown: render the chosen
     playbook's step list with each step's `model`, `budget`,
     `allowed_tools`, and `qa:` config visible. Read-only — links to
     the YAML in the repo.
-  - [ ] Per-task **model override** (free text, applies to all steps).
-  - [ ] Per-task **budget override** (USD cap across all steps).
-- [ ] **Session control** (new, exposes the per-step session behaviour)
-  - [ ] "Fresh session per step" toggle (default ON, matches today).
+  - [x] Per-task **model override** (free text, applies to all steps).
+  - [x] Per-task **budget override** (USD cap across all steps).
+- [x] **Session control** (new, exposes the per-step session behaviour)
+  - [x] "Fresh session per step" toggle (default ON, matches today).
     OFF would attempt to reuse a single provider session across
     steps — flagged as experimental; emits a UI warning that not all
     providers support it. Stores intent in `context.session_mode:
     "per_step" | "shared"`.
-  - [ ] "Preserve worktree between runs" toggle (default ON, matches
+  - [x] "Preserve worktree between runs" toggle (default ON, matches
     today). OFF wipes the worktree on retry.
-- [ ] **QA policy** (overrides per-step `qa:` from playbook, this run only)
-  - [ ] Responder: `ai | human | playbook_default` (default).
-  - [ ] Accept: `confidence | second_pass | always_human | always_ai |
+- [x] **QA policy** (overrides per-step `qa:` from playbook, this run only)
+  - [x] Responder: `ai | human | playbook_default` (default).
+  - [x] Accept: `confidence | second_pass | always_human | always_ai |
     playbook_default`.
-  - [ ] Min confidence: numeric input, 0.0–1.0, default empty
+  - [x] Min confidence: numeric input, 0.0–1.0, default empty
     (=playbook).
-  - [ ] On irreversible: `human | playbook_default`.
-  - [ ] **Notice**: shows when override would weaken safety
+  - [x] On irreversible: `human | playbook_default`.
+  - [x] **Notice**: shows when override would weaken safety
     (e.g. setting `accept: confidence` on a Merge-profile playbook is
     blocked client-side; backend enforces too per SoW-2 policy).
-- [ ] **Knowledge scope**
-  - [ ] Multi-select of project knowledge entries to **pin** to this
+- [x] **Knowledge scope**
+  - [x] Multi-select of project knowledge entries to **pin** to this
     task (overrides semantic ranking).
-  - [ ] "Exclude these tags" multi-select for entries to keep out of
+  - [x] "Exclude these tags" multi-select for entries to keep out of
     context.
-  - [ ] Counter showing approx token cost of pinned entries.
-- [ ] **Verifications**
-  - [ ] Multi-select of project verifications to run as gates.
-  - [ ] "Fail fast on first verification fail" toggle.
-  - [ ] Custom `test_cmd` (free text, runs after playbook test_cmd).
-- [ ] **Reports**
-  - [ ] Multi-select: which report types to attach on completion
+  - [x] Counter showing approx token cost of pinned entries.
+- [x] **Verifications**
+  - [x] Multi-select of project verifications to run as gates.
+  - [x] "Fail fast on first verification fail" toggle.
+  - [x] Custom `test_cmd` (free text, runs after playbook test_cmd).
+- [x] **Reports**
+  - [x] Multi-select: which report types to attach on completion
     (diff summary, cost breakdown, QA log, handover chain,
     knowledge-touched list).
-  - [ ] Default: diff summary + cost breakdown only.
-- [ ] **Integrations / agent**
-  - [ ] Agent picker (which registered agent to run as — defaults to
+  - [x] Default: diff summary + cost breakdown only.
+- [x] **Integrations / agent**
+  - [x] Agent picker (which registered agent to run as — defaults to
     project default).
-  - [ ] Integration toggles (which external tools this task may use:
+  - [x] Integration toggles (which external tools this task may use:
     forgejo, github, etc.).
-- [ ] **Advanced** (collapsed by default)
-  - [ ] Raw `context` JSON editor for fields the form doesn't cover.
-  - [ ] Per-step env var overrides.
-  - [ ] MCP server overrides.
+- [x] **Advanced** (collapsed by default)
+  - [x] Raw `context` JSON editor for fields the form doesn't cover.
+  - [x] Per-step env var overrides.
+  - [x] MCP server overrides.
 
 ### Layout
-- [ ] Two-column on desktop: form left, **live preview** right showing
+- [x] Two-column on desktop: form left, **live preview** right showing
   the resolved playbook (per-step config after overrides applied,
   cost estimate, gate count, QA policy summary).
-- [ ] Validation runs on every change; submit button disabled with
+- [x] Validation runs on every change; submit button disabled with
   reason if any field is invalid.
-- [ ] "Save as template" button persists the form state to
+- [x] "Save as template" button persists the form state to
   localStorage for next time.
 
 ### Tests
-- [ ] Playwright: each section toggles open/closed; overrides apply
+- [x] Playwright: each section toggles open/closed; overrides apply
   to preview in real time; safety-block fires when expected.
-- [ ] Unit tests on the override-merge logic (playbook + per-task →
+  ([apps/web/e2e/advanced.spec.ts](apps/web/e2e/advanced.spec.ts))
+- [x] Unit tests on the override-merge logic (playbook + per-task →
   effective config).
+  ([apps/web/e2e/override-resolver.spec.ts](apps/web/e2e/override-resolver.spec.ts))
 
 ### Exit
 - A power user can configure every documented feature for one job on
   one screen, see the resolved config before submitting, and submit
-  without leaving the page.
+  without leaving the page. ✅
 
 ---
 
-## UI-5 — Advanced job detail  ⬜
+## UI-5 — Advanced job detail  ☑
 
 **One-line:** the existing dashboard task page, refreshed to expose
 everything UI-4 lets you configure.
 
 ### Build
-- [ ] **Header**: title, state, current step, elapsed, cost (matches
+- [x] **Header**: title, state, current step, elapsed, cost (matches
   `/quick/:id`).
-- [ ] **Live step timeline** (replaces today's flat update list):
+- [x] **Live step timeline** (replaces today's flat update list):
   rows per playbook step with status, duration, cost, model,
   collapse-to-expand for that step's QA events, handover, and diff.
-- [ ] **QA panel** (full version, not just pending):
+- [x] **QA panel** (full version, not just pending):
   - Pending QAs at top with answer input.
   - History below: who asked, who answered, confidence (if AI),
     accept mode, outcome (`resolved_clean | resolved_reverted |
     resolved_followup`) per SoW-4.
-- [ ] **Handover chain**: every step's handover block, in order, with
+- [x] **Handover chain**: every step's handover block, in order, with
   copy-to-clipboard.
 - [ ] **Knowledge touched**: list of knowledge entries the run read,
   created, or modified. Click → opens entry in `/knowledge`.
-- [ ] **Verifications**: pass/fail per gate, output snippet on fail.
-- [ ] **Reports**: links to generated reports.
-- [ ] **Playbook used**: collapsible YAML view (read-only) showing
+  (Deferred — see `Known Gaps`: knowledge-touched provenance not yet
+  emitted by worker.)
+- [x] **Verifications**: pass/fail per gate, output snippet on fail.
+- [x] **Reports**: links to generated reports.
+- [x] **Playbook used**: collapsible YAML view (read-only) showing
   the exact step config that ran, with per-task overrides
-  highlighted.
-- [ ] **Cost breakdown** per step + per provider call (responder
+  highlighted (`# override` / `# forced (SoW-2)`).
+- [x] **Cost breakdown** per step + per provider call (responder
   calls separated from main step calls).
-- [ ] **Raw logs** link (existing functionality, kept).
+- [x] **Raw logs** link (existing functionality, kept).
 
 ### Tests
-- [ ] Playwright: live updates of timeline, QA panel, cost.
+- [x] Playwright: live updates of timeline, QA panel, cost.
+  ([apps/web/e2e/advanced.spec.ts](apps/web/e2e/advanced.spec.ts))
 - [ ] Accessibility pass on collapsible sections.
 
 ### Exit
-- Every backend feature has a visible representation on this page.
+- Every backend feature has a visible representation on this page. ✅
+  (Knowledge-touched panel waits on backend provenance.)
 
 ---
 
-## UI-6 — Surface the existing menu items properly  ⬜
+## UI-6 — Surface the existing menu items properly  ☑
 
 The sidebar already lists Knowledge, Verifications, Reports, Playbooks,
 Pipelines, Source, Audit. Most of these screens predate the SoW-1/2/3/4
 work and don't show the new data. Quick passes:
 
-- [ ] **Playbooks page**: render the project's YAML playbooks
+- [x] **Playbooks page**: render the project's YAML playbooks
   (read-only), highlight any step with `qa:` config, show the step
   profile classification (Implement/Review/Merge/Dream). Link "edit"
   to the file path in the repo with a note "edit in git".
-- [ ] **Knowledge page**: add filter "touched by task" with a task
-  picker. Add "created by AI" filter.
-- [ ] **Reports page**: list reports generated from task runs.
-  Filter by project / playbook / outcome.
-- [ ] **Review Queue page**: ensure it surfaces `ai_review` and
+- [x] **Knowledge page**: add filter "touched by task" with a task
+  picker. Add "created by AI" filter. (Client-side; backend lacks a
+  `task_id` query param — see `Known Gaps`.)
+- [x] **Reports page**: list reports generated from task runs.
+  Filter by project / playbook / outcome. (Kind + task-run-only +
+  task-id filters land; project / playbook / outcome remain — see
+  `Known Gaps`.)
+- [x] **Review Queue page**: ensure it surfaces `ai_review` and
   `human_review` items, with the QA prompt + answer UI inline.
-  Today's queue may only show `human_review`.
-- [ ] **Audit page**: include QA events (created, AI-answered,
+- [x] **Audit page**: include QA events (created, AI-answered,
   human-answered, escalated, outcome-stamped) in the audit log.
+  (UI registers `qa` entity_type + new action colors; backend
+  emission unverified — see `Known Gaps`.)
 
 ### Exit
 - No sidebar item leads to a stale page that ignores the new
-  features.
+  features. ✅
+
+---
+
+## Known Gaps (logged from BLOCK A/F verifications)
+
+These are surfaced by the new advanced UI but require backend work to
+fully land. Each is non-blocking for UI-4/5/6 \u2014 the UI degrades
+gracefully (filters happen client-side on the page payload, empty
+panels show "no data yet").
+
+1. **Knowledge `task_id` query param** \u2014 the backend list endpoint
+   accepts `category` + `tag` only. The new Knowledge filter scopes
+   to `metadata.task_id` substring **in memory** on the current page
+   payload, so it can't reach beyond the loaded set. Add `task_id`
+   to `GET /v1/{project}/knowledge` to make it authoritative.
+
+2. **Reports filters** \u2014 the backend list endpoint accepts `status`
+   only. The new `kind`, `task_id`, and `task-run-only` filters all
+   run in memory. Add `kind` and `task_id` params to
+   `GET /v1/{project}/reports`. `outcome` filter requires reports to
+   carry a derived outcome field (not present today).
+
+3. **QA audit events** \u2014 the audit page now styles `entity_type='qa'`
+   with peach + extra action colors (`answered`/`resolved`/`expired`),
+   but the worker is not confirmed to emit these audit rows. Verify
+   the QA lifecycle writes to the audit table; if not, add emission
+   in `apps/api/src/qa.rs` / worker QA resolution path.
+
+4. **Knowledge-touched provenance for tasks** \u2014 UI-5's "Knowledge
+   touched" panel was deferred because the worker does not yet
+   record which knowledge entries it read/created/modified per task.
+   Add either a `task_knowledge_link` join table or a
+   `metadata.task_id` stamp on knowledge writes so the page can
+   show provenance.
+
+5. **Playbook source URL** \u2014 the UI-6 Playbooks page renders an
+   "Edit in git" link only when `playbook.metadata.source_url` (or
+   `git_url`) is present. Seeded defaults don't carry it; the
+   analyzer should populate `source_url` when importing playbooks
+   from disk for the link to appear on user playbooks.
+
+6. **Advanced-task overrides round-trip** \u2014 UI-4 writes
+   `context.qa_override`, `context.session_mode`,
+   `context.preserve_worktree`, `context.knowledge_pin`,
+   `context.knowledge_exclude_tags`, `context.verifications`,
+   `context.fail_fast`, `context.extra_test_cmd`, `context.reports`,
+   `context.integrations`, `context.env_overrides`,
+   `context.mcp_overrides` into the task's `context` JSONB. The
+   client-side override-resolver mirrors SoW-2 safety policy, but
+   the runtime worker must honour these fields. Cross-check each
+   field against the worker code path before shipping the feature
+   as supported.
 
 ---
 
