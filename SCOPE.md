@@ -89,35 +89,39 @@ QA item, route to a human via the existing review queue.
 
 ---
 
-## SoW-3 — Structured handover  ⬜
+## SoW-3 — Structured handover  ✅ DONE
 
 **One-line:** the previous step writes a `HANDOVER` block; the next step's
 prompt prepends it. Defines `PreviousStepContext` for SoW-2.
 
 ### Build
-- [ ] Migration `048_task_update_kind_handover.sql`: add `handover` to
+- [x] Migration `048_task_update_kind_handover.sql`: add `handover` to
   `task_updates.kind` enum.
-- [ ] `PreviousStepContext { from_step: String, handover: Option<String>,
+- [~] `PreviousStepContext { from_step: String, handover: Option<String>,
   qa_answer: Option<String> }` in `apps/orchestra/src/engine/mod.rs` (or
   new module). Replace `ProviderTaskContext.previous_step_output:
   Option<String>` at:
   - `apps/orchestra/src/engine/worker.rs:629`
   - `apps/orchestra/src/engine/mod.rs:227`
   - `apps/orchestra/src/chat.rs:650`
-- [ ] Extend the sentinel parser from SoW-1 to also recognise
+  *Deferred to SoW-2.* SoW-3 implements the equivalent behavior directly
+  in `build_user_prompt` by loading the latest `kind=handover`
+  task_update; the dedicated struct refactor lands when SoW-2 needs to
+  attach `qa_answer` alongside `handover`.
+- [x] Extend the sentinel parser from SoW-1 to also recognise
   `HANDOVER[<nonce>]: ... HANDOVER_END[<nonce>]`.
-- [ ] Worker persists handover as a `task_updates` row of kind `handover`.
-- [ ] On the next step's run, worker loads the latest `handover` row for
+- [x] Worker persists handover as a `task_updates` row of kind `handover`.
+- [x] On the next step's run, worker loads the latest `handover` row for
   the task and populates `PreviousStepContext.handover`.
-- [ ] `engine/prompt.rs` consumer: when `PreviousStepContext` has any
+- [x] `engine/prompt.rs` consumer: when `PreviousStepContext` has any
   populated field, prepend a `## Handover from <from_step>` section to
   the prompt.
-- [ ] System-prompt addendum (all steps) instructing the agent to close
+- [x] System-prompt addendum (all steps) instructing the agent to close
   with a `HANDOVER` block.
 
 ### Tests
-- [ ] Parser test: handover-only log, QA-only log, both-in-same-log.
-- [ ] End-to-end: step A writes handover → step B prompt contains it.
+- [x] Parser test: handover-only log, QA-only log, both-in-same-log.
+- [x] End-to-end: step A writes handover → step B prompt contains it.
 
 ### Exit
 - A two-step playbook visibly carries decisions across steps without the
