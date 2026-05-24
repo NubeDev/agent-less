@@ -178,6 +178,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/audit/audit').then(m => m.AuditPage),
   },
   {
+    path: 'jobs/:taskId',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/jobs/job-theatre').then(m => m.JobTheatrePage),
+  },
+  {
     path: 'settings',
     canActivate: [AuthGuard],
     loadComponent: () => import('./features/settings/settings').then(m => m.SettingsPage),
