@@ -423,9 +423,9 @@ SoW-2.
 7. **Weak models may never use the sentinel.** Plan to monitor
    "tasks failed silently" vs "tasks asked a QA" ratio after launch;
    if QA rate is ~0, the system prompt isn't working.
-8. **No rate-limit on QA emissions.** A confused agent could emit dozens
-   of sentinels in one log. Add max-per-step cap (e.g. 3) in the parser
-   with a WARN if exceeded.
+8. **No rate-limit on QA emissions.** ✅ Implemented in commit c82b9c7
+   (sentinel forensics + per-step emission cap). `providers/sentinel.rs`
+   enforces `MAX_QA_PER_STEP = 3` with a `tracing::warn` on truncation.
 9. **QA item lifecycle on task cancellation.** ✅ Implemented.
    `repository::resolve_pending_qa_for_cancelled_task` is invoked from
    `routes/tasks::transition_task` on any `* → cancelled` transition;
