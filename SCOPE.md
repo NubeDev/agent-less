@@ -384,8 +384,11 @@ SoW-2.
    `.diraigent/playbooks/*.yaml`. Operator-UX regression (no UI editing
    without a git commit). Worth revisiting as "hybrid: YAML defaults +
    DB overrides table" — model after GitHub Actions repo settings.
-2. **`POST /v1` creates a project, not `POST /v1/projects`.** Surprising
-   to every new user. Add `/v1/projects`, deprecate root path.
+2. **`POST /v1` creates a project, not `POST /v1/projects`.** ✅ Canonical
+   `/v1/projects` aliases shipped alongside the legacy bare-root paths.
+   Both forms work; new code should target `/v1/projects/...`. Legacy
+   routes can be removed once callers (web, orchestra, tui) migrate.
+   Test: `projects_canonical_and_legacy_paths_both_work`.
 3. **`memberships.rs` `ON CONFLICT` 500 bug** flagged in
    NEW-TASK.md troubleshooting. Verify still real; fix or remove the note.
 4. **Stale state-machine vocabulary** (`draft`/`in_progress`/`blocked`)
@@ -415,8 +418,14 @@ SoW-2.
 
 10. **Forensics.** QA item should store `sentinel_raw` (the matched
     block as the agent emitted it) for debugging "why did this fire?".
-11. **QA velocity metrics.** Average human answer time, AI confidence
-    distribution, accept rate. Needs SoW-4 telemetry + a dashboard query.
+11. **QA velocity metrics.** ✅ Backend endpoint shipped:
+    `GET /v1/qa/metrics?project_id=&window_days=` returns counters
+    (by_status/responder/kind/outcome), human/AI answer-latency
+    percentiles (p50/p95), and accept/escalation/expiration rates.
+    Integration test `qa_metrics_aggregates_velocity_and_outcomes`.
+    AI-confidence distribution deferred — confidence isn't persisted
+    on the QA row yet (consumed transiently by `accept_check`); add
+    `metadata.ai_confidence` to extend. UI dashboard not yet built.
 12. **Surprise billing risk.** ✅ Documented in `apps/orchestra/CLAUDE.md`
     under "QA Sentinels & `qa:` Block → Surprise billing". Covers re-run
     additive cost accounting, `second_pass` doubling, the stuck-detector

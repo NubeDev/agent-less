@@ -12,7 +12,14 @@ use crate::tenant::TenantContext;
 use crate::validation;
 
 pub fn routes() -> Router<AppState> {
-    Router::new()
+    // Debt #2: projects historically lived at the bare `/v1` root
+    // (`POST /v1` created a project, `GET /v1/{uuid}` fetched one),
+    // which surprised every new caller. The canonical resource path
+    // is now `/v1/projects`. We expose BOTH path sets so existing
+    // clients (web UI, orchestra, tui, integration tests) keep
+    // working; the legacy `/` routes can be removed once all
+    // callers migrate. New code should target `/projects/...`.
+    let legacy = Router::new()
         .route("/", post(create_project).get(list_projects))
         .route(
             "/{project_id}",
@@ -20,7 +27,19 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/by-slug/{slug}", get(get_project_by_slug))
         .route("/{project_id}/children", get(get_project_children))
-        .route("/{project_id}/tree", get(get_project_tree))
+        .route("/{project_id}/tree", get(get_project_tree));
+
+    let canonical = Router::new()
+        .route("/projects", post(create_project).get(list_projects))
+        .route(
+            "/projects/{project_id}",
+            get(get_project).put(update_project).delete(delete_project),
+        )
+        .route("/projects/by-slug/{slug}", get(get_project_by_slug))
+        .route("/projects/{project_id}/children", get(get_project_children))
+        .route("/projects/{project_id}/tree", get(get_project_tree));
+
+    legacy.merge(canonical)
 }
 
 /// Resolve the package for a project and build a full ProjectResponse.

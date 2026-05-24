@@ -183,3 +183,52 @@ async fn project_metadata_auto_push_coexists_with_other_keys() {
 
     app.cleanup().await;
 }
+
+/// Debt #2: the canonical resource path is /v1/projects, not the
+/// historical bare /v1 root. This test pins both forms working so
+/// future refactors can't silently break either.
+#[tokio::test]
+async fn projects_canonical_and_legacy_paths_both_work() {
+    use crate::harness::{get, post_json};
+    use axum::http::StatusCode;
+
+    let app = require_db!();
+
+    // Create via the canonical path.
+    let r = app
+        .send(post_json(
+            "/v1/projects",
+            serde_json::json!({ "name": "debt2-canonical" }),
+        ))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "canonical create: {}",
+        r.json
+    );
+    let canonical_id = r.json["id"].as_str().unwrap().to_string();
+
+    // Fetch the same project via the canonical /projects/{id}.
+    let r = app.send(get(&format!("/v1/projects/{canonical_id}"))).await;
+    assert_eq!(r.status, StatusCode::OK, "canonical get: {}", r.json);
+    assert_eq!(r.json["name"], "debt2-canonical");
+
+    // Legacy /v1/{id} still works (back-compat for orchestra/tui/web).
+    let r = app.send(get(&format!("/v1/{canonical_id}"))).await;
+    assert_eq!(r.status, StatusCode::OK, "legacy get: {}", r.json);
+    assert_eq!(r.json["id"].as_str().unwrap(), canonical_id);
+
+    // List via canonical path.
+    let r = app.send(get("/v1/projects")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let names: Vec<String> = r.json["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["name"].as_str().map(str::to_string))
+        .collect();
+    assert!(names.contains(&"debt2-canonical".to_string()));
+
+    app.cleanup().await;
+}
