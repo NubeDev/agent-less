@@ -374,31 +374,42 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ verified: **all 12
-   fields are currently ignored by the runtime**. UI-4 persists
-   `qa_override`, `session_mode`, `preserve_worktree`, `knowledge_pin`,
-   `knowledge_exclude_tags`, `verifications`, `fail_fast`,
-   `extra_test_cmd`, `reports`, `integrations`, `env_overrides`, and
-   `mcp_overrides` into `task.context` JSONB, but:
+6. **Advanced-task overrides round-trip** — ⚠️ in progress:
+   `env_overrides` ✅ shipped; the other 11 fields are still ignored
+   by the runtime. UI-4 persists `qa_override`, `session_mode`,
+   `preserve_worktree`, `knowledge_pin`, `knowledge_exclude_tags`,
+   `verifications`, `fail_fast`, `extra_test_cmd`, `reports`,
+   `integrations`, `env_overrides`, and `mcp_overrides` into
+   `task.context` JSONB, but:
    - The API ([repository/tasks.rs](apps/api/src/repository/tasks.rs))
      persists `context` as opaque JSON.
    - The worker only reads `spec`, `description`, `notes`,
      `acceptance_criteria`, `files`, `decompose`, and `model` from
      `context` ([engine/prompt.rs](apps/orchestra/src/engine/prompt.rs),
-     [engine/spawner.rs](apps/orchestra/src/engine/spawner.rs)).
+     [engine/spawner.rs](apps/orchestra/src/engine/spawner.rs)), plus
+     `env_overrides` (new — see below).
    - `qa_config` resolution reads the playbook `qa:` block only —
      `context.qa_override` is dropped.
-   - `env_overrides` / `mcp_overrides` would need to merge into
-     `step_config.env` / `step_config.mcp_servers` in
-     [engine/worker.rs](apps/orchestra/src/engine/worker.rs) before
-     the ResolvedStep is built.
+   - `mcp_overrides` would need to merge into `step_config.mcp_servers`
+     in [engine/worker.rs](apps/orchestra/src/engine/worker.rs) before
+     the ResolvedStep is built. (Mirror the env_overrides pattern.)
 
-   Each field is a discrete worker change; until those land, the
-   advanced UI must NOT be shipped as "supported" — it stores
-   intent that the runtime silently discards. Recommended split:
-   land `env_overrides` + `mcp_overrides` first (smallest blast
-   radius, both are well-isolated merges), then `qa_override`
-   (single resolver tweak), then the rest as separate features.
+   **Shipped**: `env_overrides` — `run_worker` calls
+   `env_overrides_from_task` (see `engine/worker.rs`) to extract the
+   string-only sub-map of `task.context.env_overrides` and merge it
+   into the cloned `StepConfig.env` immediately before
+   `execute_via_provider`. Task overrides win over playbook `step.env`
+   (last writer in the chain). Malformed values (non-string, missing
+   keys, non-object `context`) degrade silently to a no-op so the
+   advanced UI can never block worker progress. 3 unit tests cover
+   extract / filter-non-strings / malformed paths.
+
+   Each remaining field is a discrete worker change; until those land,
+   the advanced UI must NOT be shipped as "supported" — it stores
+   intent that the runtime silently discards. Recommended order for
+   the rest: `mcp_overrides` (smallest blast radius, mirrors the
+   env_overrides merge), then `qa_override` (single resolver tweak in
+   `engine/qa_config.rs`), then the larger features.
 
 ---
 

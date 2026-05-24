@@ -248,6 +248,7 @@ const TOOLS_MERGE: &[&str] = &["Bash(*)", "Read", "Glob", "Grep"];
 ///
 /// Configuration is read from the playbook step JSONB with hardcoded
 /// fallback defaults based on step name.
+#[derive(Clone)]
 pub struct StepConfig {
     /// Model override for this step. `None` means use CLI default.
     pub model: Option<String>,
@@ -365,6 +366,22 @@ impl StepConfig {
             base_url,
         }
     }
+}
+
+/// Extract `task.context.env_overrides` (UI-gap #6) as a string→string
+/// map. Non-string values, missing keys, and a non-object `context` all
+/// degrade silently to an empty map so a malformed task payload can
+/// never block worker progress.
+pub(crate) fn env_overrides_from_task(task: &Value) -> HashMap<String, String> {
+    task.get("context")
+        .and_then(|c| c.get("env_overrides"))
+        .and_then(|e| e.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Map a tool preset string to the list of allowed tools.
@@ -506,6 +523,37 @@ pub async fn run_worker(
     // worktrees, PTY, tools, and file access needed for task execution.
     let provider_name = step_config.provider.as_deref().unwrap_or("claude-code");
     let start = std::time::Instant::now();
+
+    // UI-gap #6: honor `task.context.env_overrides` (string→string map)
+    // written by the advanced-task UI. Merge into step_config.env so the
+    // overrides reach the wrapper shell that exports them before exec.
+    // Task overrides win over playbook step env (last writer in the
+    // chain: hardcoded < step.env < task.context.env_overrides) — the UI
+    // advertises these as "task overrides" so user intent at task
+    // creation should take precedence over the playbook author. The
+    // DIRAIGENT_TASK_ID / DIRAIGENT_PROJECT_ID stamps (gap #4) are
+    // applied later in ResolvedStep::env so they remain reserved.
+    let step_config_owned: StepConfig = match api.get_task(task_id).await {
+        Ok(task) => {
+            let overrides = env_overrides_from_task(&task);
+            if overrides.is_empty() {
+                step_config.clone()
+            } else {
+                let mut sc = step_config.clone();
+                for (k, v) in overrides {
+                    sc.env.insert(k, v);
+                }
+                sc
+            }
+        }
+        Err(e) => {
+            warn!(
+                "worker {tid}: get_task failed while resolving env_overrides: {e} — proceeding with step env only"
+            );
+            step_config.clone()
+        }
+    };
+    let step_config = &step_config_owned;
 
     let (result, cost_usd, input_tokens, output_tokens, api_turns, stop_reason, is_error) =
         execute_via_provider(
@@ -1964,5 +2012,64 @@ mod tests {
         // Zero budget defends against div-by-zero.
         let p = should_fire_stuck_detector(&stuck_cfg(true), 0, 0, 10.0, Some(0.0), "implement");
         assert!(p.is_none());
+    }
+
+    // ── env_overrides_from_task (UI-gap #6) ─────────────────
+
+    #[test]
+    fn env_overrides_extracts_string_map() {
+        let task = serde_json::json!({
+            "id": "t1",
+            "context": {
+                "env_overrides": {
+                    "FOO": "bar",
+                    "BAZ": "qux",
+                }
+            }
+        });
+        let m = env_overrides_from_task(&task);
+        assert_eq!(m.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(m.get("BAZ").map(String::as_str), Some("qux"));
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn env_overrides_filters_non_string_values() {
+        let task = serde_json::json!({
+            "context": {
+                "env_overrides": {
+                    "OK": "yes",
+                    "BAD_NUM": 42,
+                    "BAD_OBJ": { "nested": true },
+                    "BAD_NULL": null,
+                }
+            }
+        });
+        let m = env_overrides_from_task(&task);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get("OK").map(String::as_str), Some("yes"));
+    }
+
+    #[test]
+    fn env_overrides_empty_when_missing_or_malformed() {
+        // Missing context.
+        let t1 = serde_json::json!({"id": "t1"});
+        assert!(env_overrides_from_task(&t1).is_empty());
+
+        // Missing env_overrides key.
+        let t2 = serde_json::json!({"context": {"spec": "hi"}});
+        assert!(env_overrides_from_task(&t2).is_empty());
+
+        // env_overrides is a string, not an object.
+        let t3 = serde_json::json!({"context": {"env_overrides": "FOO=bar"}});
+        assert!(env_overrides_from_task(&t3).is_empty());
+
+        // env_overrides is an array.
+        let t4 = serde_json::json!({"context": {"env_overrides": ["FOO=bar"]}});
+        assert!(env_overrides_from_task(&t4).is_empty());
+
+        // context itself is a scalar.
+        let t5 = serde_json::json!({"context": "not an object"});
+        assert!(env_overrides_from_task(&t5).is_empty());
     }
 }
