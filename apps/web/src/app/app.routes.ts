@@ -25,6 +25,16 @@ export const routes: Routes = [
     loadComponent: () => import('./features/quick/quick-detail').then(m => m.QuickDetailPage),
   },
   {
+    path: 'advanced/new',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/advanced/advanced-new').then(m => m.AdvancedNewPage),
+  },
+  {
+    path: 'advanced/:id',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/advanced/advanced-detail').then(m => m.AdvancedDetailPage),
+  },
+  {
     path: 'dashboard',
     canActivate: [AuthGuard],
     loadComponent: () => import('./features/dashboard/dashboard').then(m => m.DashboardPage),
