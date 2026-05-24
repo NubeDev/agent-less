@@ -382,11 +382,11 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ in progress: 8 of 12
+6. **Advanced-task overrides round-trip** — ⚠️ in progress: 9 of 12
    fields shipped (`env`, `mcp`, `qa_override`, `model_override`,
    `budget_usd_cap`, `preserve_worktree`, `knowledge.{pin_ids,exclude_tags}`,
-   `integrations_allowed`);
-   the other 4 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
+   `integrations_allowed`, `reports`);
+   the other 3 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
    `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
    `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
    `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
@@ -467,10 +467,26 @@ panels show "no data yet").
    The worker now accepts both names, with the UI canonical name
    winning when both are present.
 
+   - `reports` → migration 050 adds `report.source` discriminator
+     (`'researcher'` vs `'auto'`) and relaxes `prompt` / `created_by`
+     NOT NULL. New `POST /v1/{project_id}/reports/auto` endpoint and
+     `create_auto_report` repo helper (api side). `TaskSource::post_auto_report`
+     + `list_qa_items_for_task` thread through all three impls
+     (ProjectsApi / Orchestra / Local). Five pure generators in
+     [engine/reports.rs](apps/orchestra/src/engine/reports.rs):
+     `diff_summary`, `cost_breakdown`, `qa_log`, `handover_chain`,
+     `knowledge_touched`. `emit_requested_reports` in
+     [engine/scheduler.rs](apps/orchestra/src/engine/scheduler.rs)
+     fires at the end of the AllDone branch (after merge / cleanup /
+     preserve_worktree decisions) so generators see the final task
+     state. Best-effort: per-kind failures log and continue; unknown
+     kinds are silently dropped for forward compatibility. 10 unit
+     tests cover each generator + the requested_kinds parser.
+
    Each remaining field is a discrete worker change; until those land,
    the advanced UI must NOT be shipped as "supported" for them — it
    stores intent that the runtime silently discards. Remaining:
-   `session_mode`, `verifications.*`, `reports`.
+   `session_mode`, `verifications.*`.
 
 ---
 
