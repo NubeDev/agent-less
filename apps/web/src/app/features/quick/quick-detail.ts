@@ -39,7 +39,8 @@ import { setUiMode } from '../../core/guards/default-route.guard';
       </div>
 
       @if (loadError()) {
-        <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm">{{ loadError() }}</div>
+        <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm"
+             role="alert" aria-live="assertive">{{ loadError() }}</div>
       } @else if (!task()) {
         <div class="text-text-secondary">{{ t('quick.loading') }}</div>
       } @else {
@@ -60,7 +61,10 @@ import { setUiMode } from '../../core/guards/default-route.guard';
         <!-- Pending QA panel -->
         @if (pendingQa(); as qa) {
           <section class="mb-6 p-4 rounded-lg border border-ctp-yellow/40 bg-ctp-yellow/5"
-                   data-testid="quick-qa-panel">
+                   data-testid="quick-qa-panel"
+                   role="region"
+                   aria-live="polite"
+                   [attr.aria-label]="t('quick.qaTitle')">
             <h2 class="text-sm font-semibold text-ctp-yellow uppercase tracking-wide mb-2">
               {{ t('quick.qaTitle') }}
             </h2>
@@ -79,7 +83,9 @@ import { setUiMode } from '../../core/guards/default-route.guard';
                 }
               </div>
             } @else {
-              <textarea [(ngModel)]="qaAnswerDraft" rows="3"
+              <label for="quick-qa-answer" class="sr-only">{{ t('quick.qaTitle') }}</label>
+              <textarea id="quick-qa-answer" [(ngModel)]="qaAnswerDraft" rows="3"
+                        [attr.aria-label]="t('quick.qaTitle')"
                         [placeholder]="t('quick.qaAnswerPlaceholder')"
                         class="w-full px-3 py-2 rounded-lg border border-border bg-bg-subtle text-text-primary
                                focus:outline-none focus:ring-2 focus:ring-accent text-sm"></textarea>
@@ -95,7 +101,7 @@ import { setUiMode } from '../../core/guards/default-route.guard';
             }
 
             @if (answerError()) {
-              <p class="mt-2 text-sm text-ctp-red">{{ answerError() }}</p>
+              <p class="mt-2 text-sm text-ctp-red" role="alert" aria-live="assertive">{{ answerError() }}</p>
             }
           </section>
         }

@@ -116,7 +116,8 @@ const REPORT_TYPES = [
       </div>
 
       @if (loadError()) {
-        <div class="mb-4 p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm">{{ loadError() }}</div>
+        <div class="mb-4 p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm"
+             role="alert" aria-live="assertive">{{ loadError() }}</div>
       }
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -450,14 +451,16 @@ const REPORT_TYPES = [
 
           <!-- Submit -->
           @if (validationErrors().length > 0) {
-            <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm space-y-1">
+            <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm space-y-1"
+                 role="alert" aria-live="assertive">
               @for (e of validationErrors(); track e.path) {
                 <p><span class="font-mono text-xs">{{ e.path }}</span>: {{ e.message }}</p>
               }
             </div>
           }
           @if (submitError()) {
-            <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm">{{ submitError() }}</div>
+            <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm"
+                 role="alert" aria-live="assertive">{{ submitError() }}</div>
           }
           <div class="sticky bottom-0 bg-bg/95 backdrop-blur-sm py-3 -mx-3 px-3 border-t border-border flex items-center justify-between">
             <a routerLink="/quick/new" class="text-sm text-text-secondary hover:text-text-primary underline decoration-dotted">

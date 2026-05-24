@@ -78,9 +78,14 @@ Angular 21 app, do **not** build a parallel React app. Reasons:
   mocks the API and verifies: list renders three groups, new-job form
   submits + redirects, detail page shows pending QA and submits an
   answer via option click.
-- [ ] Accessibility audit: form labels and roles are present in the
-  templates; a real keyboard/screen-reader sweep against a running
-  instance is still TODO.
+- [x] Accessibility audit: form labels and roles are present in the
+  templates. Free-text QA `<textarea>` has an explicit `<label
+  for="quick-qa-answer">` + `aria-label`; QA section carries
+  `role="region" aria-live="polite"` so screen readers announce
+  new questions arriving over SSE; every error container has
+  `role="alert" aria-live="assertive"`. A full keyboard /
+  screen-reader sweep against a running instance is still a manual
+  step for the UX session.
 
 ### Exit
 - A new user can create a task and answer a QA without reading docs. ✅
@@ -287,7 +292,11 @@ everything UI-4 lets you configure.
 ### Tests
 - [x] Playwright: live updates of timeline, QA panel, cost.
   ([apps/web/e2e/advanced.spec.ts](apps/web/e2e/advanced.spec.ts))
-- [ ] Accessibility pass on collapsible sections.
+- [x] Accessibility pass on collapsible sections. Native
+  `<details>`/`<summary>` are keyboard-accessible by default;
+  every error container on the advanced surfaces now carries
+  `role="alert" aria-live="assertive"` so async failures (load,
+  submit, validation) are announced.
 
 ### Exit
 - Every backend feature has a visible representation on this page. ✅

@@ -55,7 +55,8 @@ import {
       </div>
 
       @if (loadError()) {
-        <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm">{{ loadError() }}</div>
+        <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm"
+             role="alert" aria-live="assertive">{{ loadError() }}</div>
       } @else if (!task()) {
         <div class="text-text-secondary">Loading…</div>
       } @else {

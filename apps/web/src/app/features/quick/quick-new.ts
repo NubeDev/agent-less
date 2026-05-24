@@ -32,7 +32,8 @@ import { setUiMode } from '../../core/guards/default-route.guard';
       </div>
 
       @if (loadError()) {
-        <div class="mb-4 p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm">
+        <div class="mb-4 p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm"
+             role="alert" aria-live="assertive">
           {{ loadError() }}
         </div>
       }
@@ -110,7 +111,8 @@ import { setUiMode } from '../../core/guards/default-route.guard';
         }
 
         @if (submitError()) {
-          <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm">
+          <div class="p-3 rounded-lg bg-ctp-red/10 text-ctp-red text-sm"
+               role="alert" aria-live="assertive">
             {{ submitError() }}
           </div>
         }
