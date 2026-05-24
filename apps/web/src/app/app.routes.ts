@@ -1,11 +1,28 @@
 import { Routes } from '@angular/router';
 import { AuthGuard } from './core/guards/auth.guard';
+import { DefaultRouteGuard } from './core/guards/default-route.guard';
 import { AuthCallbackPage } from './features/auth/pages/auth-callback/auth-callback';
 
 export const routes: Routes = [
   {
     path: '',
+    canActivate: [DefaultRouteGuard],
     loadComponent: () => import('./features/landing/landing').then(m => m.LandingPage),
+  },
+  {
+    path: 'quick',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/quick/quick-list').then(m => m.QuickListPage),
+  },
+  {
+    path: 'quick/new',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/quick/quick-new').then(m => m.QuickNewPage),
+  },
+  {
+    path: 'quick/:id',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/quick/quick-detail').then(m => m.QuickDetailPage),
   },
   {
     path: 'dashboard',
