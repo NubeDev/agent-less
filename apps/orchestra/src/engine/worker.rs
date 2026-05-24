@@ -1,6 +1,6 @@
 use crate::crypto::Dek;
 use crate::engine::prompt;
-use crate::engine::qa_config::{QaConfig, Responder, resolve_qa_config};
+use crate::engine::qa_config::{QaConfig, Responder, resolve_qa_config_with_override};
 use crate::engine::responder::{AcceptDecision, ProviderResponderRunner, auto_answer_qa};
 use crate::engine::step_profile::StepProfile;
 use crate::engine::task_source::TaskSource;
@@ -368,20 +368,87 @@ impl StepConfig {
     }
 }
 
-/// Extract `task.context.env_overrides` (UI-gap #6) as a string→string
-/// map. Non-string values, missing keys, and a non-object `context` all
+/// Extract `task.context.env` (the canonical key the advanced UI writes
+/// via `buildTaskContext`) or the legacy `task.context.env_overrides` as
+/// a string→string map.
+///
+/// Non-string values, missing keys, and a non-object `context` all
 /// degrade silently to an empty map so a malformed task payload can
-/// never block worker progress.
+/// never block worker progress. When both keys are present `env` wins —
+/// it is the name the UI actually emits.
 pub(crate) fn env_overrides_from_task(task: &Value) -> HashMap<String, String> {
-    task.get("context")
-        .and_then(|c| c.get("env_overrides"))
-        .and_then(|e| e.as_object())
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
+    let ctx = match task.get("context").and_then(|c| c.as_object()) {
+        Some(c) => c,
+        None => return HashMap::new(),
+    };
+    let obj = ctx
+        .get("env")
+        .or_else(|| ctx.get("env_overrides"))
+        .and_then(|e| e.as_object());
+    obj.map(|obj| {
+        obj.iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Extract `task.context.mcp` (the canonical key the advanced UI writes)
+/// or the legacy `task.context.mcp_overrides` as a JSON `Value` suitable
+/// for merging into `StepConfig::mcp_servers`.
+///
+/// The UI sends a raw object the user pasted as JSON, so accept either
+/// the wrapped shape `{"mcpServers": {…}}` or the bare server map
+/// `{"server-name": {…}}` — the merger normalises both.
+pub(crate) fn mcp_overrides_from_task(task: &Value) -> Option<Value> {
+    let ctx = task.get("context").and_then(|c| c.as_object())?;
+    let raw = ctx.get("mcp").or_else(|| ctx.get("mcp_overrides"))?;
+    if !raw.is_object() {
+        return None;
+    }
+    Some(raw.clone())
+}
+
+/// Merge task-supplied MCP overrides into the playbook step's
+/// `mcp_servers` block. Task overrides win per-server-name; the playbook
+/// is the source of truth for keys the task does not override.
+///
+/// Both inputs may be in either of two shapes:
+///   - wrapped: `{"mcpServers": {"name": {…}}}`
+///   - bare:    `{"name": {…}}`
+///
+/// The output is always the wrapped shape that
+/// `providers::claude_code` expects when writing the temporary
+/// `--mcp-config` file.
+pub(crate) fn merge_mcp_servers(base: Option<&Value>, overrides: Option<&Value>) -> Option<Value> {
+    fn as_server_map(v: &Value) -> Option<&serde_json::Map<String, Value>> {
+        v.get("mcpServers")
+            .and_then(|m| m.as_object())
+            .or_else(|| v.as_object())
+    }
+
+    match (base, overrides) {
+        (None, None) => None,
+        (Some(b), None) => Some(b.clone()),
+        (base, Some(o)) => {
+            let mut merged = serde_json::Map::new();
+            if let Some(b) = base.and_then(as_server_map) {
+                for (k, v) in b {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(o) = as_server_map(o) {
+                for (k, v) in o {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            if merged.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!({ "mcpServers": Value::Object(merged) }))
+            }
+        }
+    }
 }
 
 /// Map a tool preset string to the list of allowed tools.
@@ -468,14 +535,33 @@ pub async fn run_worker(
 
     // Resolve per-step QA policy once, up front. Defaults to the
     // human-only pre-SoW-2 behaviour for steps with no `qa:` block.
-    let qa_cfg = resolve_qa_config(&step_config.step_name, step_config.step_json.as_ref())
-        .unwrap_or_else(|e| {
-            warn!(
-                "worker {tid}: invalid qa_config for step '{}': {e} — falling back to human default",
-                step_config.step_name
-            );
-            QaConfig::human_default()
-        });
+    // UI-gap #6: fetch the task once and reuse it for both the QA
+    // override (here) and the env_overrides merge below. Fetch
+    // failure is non-fatal — we proceed with the playbook view of
+    // the world so a transient API hiccup never blocks a worker run.
+    let task_value: Option<Value> = match api.get_task(task_id).await {
+        Ok(t) => Some(t),
+        Err(e) => {
+            warn!("worker {tid}: get_task failed: {e} — proceeding without task.context overrides");
+            None
+        }
+    };
+    let task_qa_override = task_value
+        .as_ref()
+        .and_then(|t| t.get("context"))
+        .and_then(|c| c.get("qa_override"));
+    let qa_cfg = resolve_qa_config_with_override(
+        &step_config.step_name,
+        step_config.step_json.as_ref(),
+        task_qa_override,
+    )
+    .unwrap_or_else(|e| {
+        warn!(
+            "worker {tid}: invalid qa_config for step '{}': {e} — falling back to human default",
+            step_config.step_name
+        );
+        QaConfig::human_default()
+    });
 
     // Ensure log directory exists
     tokio::fs::create_dir_all(log_dir).await.ok();
@@ -524,34 +610,38 @@ pub async fn run_worker(
     let provider_name = step_config.provider.as_deref().unwrap_or("claude-code");
     let start = std::time::Instant::now();
 
-    // UI-gap #6: honor `task.context.env_overrides` (string→string map)
-    // written by the advanced-task UI. Merge into step_config.env so the
-    // overrides reach the wrapper shell that exports them before exec.
-    // Task overrides win over playbook step env (last writer in the
-    // chain: hardcoded < step.env < task.context.env_overrides) — the UI
-    // advertises these as "task overrides" so user intent at task
-    // creation should take precedence over the playbook author. The
-    // DIRAIGENT_TASK_ID / DIRAIGENT_PROJECT_ID stamps (gap #4) are
-    // applied later in ResolvedStep::env so they remain reserved.
-    let step_config_owned: StepConfig = match api.get_task(task_id).await {
-        Ok(task) => {
-            let overrides = env_overrides_from_task(&task);
-            if overrides.is_empty() {
+    // UI-gap #6: honor `task.context.env` and `task.context.mcp` (the
+    // names the advanced UI's `buildTaskContext` emits) — the worker
+    // also accepts the legacy `env_overrides` / `mcp_overrides` names.
+    //
+    // Env: merge into step_config.env so the overrides reach the
+    // wrapper shell that exports them before exec. Task overrides win
+    // over playbook step env. The DIRAIGENT_TASK_ID /
+    // DIRAIGENT_PROJECT_ID stamps (gap #4) are applied later in
+    // ResolvedStep::env so they remain reserved.
+    //
+    // MCP: deep-merge per-server-name into step_config.mcp_servers, so
+    // a task can override one server's URL/command without losing the
+    // playbook's other servers.
+    let step_config_owned: StepConfig = match task_value.as_ref() {
+        Some(task) => {
+            let env_overrides = env_overrides_from_task(task);
+            let mcp_overrides = mcp_overrides_from_task(task);
+            if env_overrides.is_empty() && mcp_overrides.is_none() {
                 step_config.clone()
             } else {
                 let mut sc = step_config.clone();
-                for (k, v) in overrides {
+                for (k, v) in env_overrides {
                     sc.env.insert(k, v);
+                }
+                if mcp_overrides.is_some() {
+                    sc.mcp_servers =
+                        merge_mcp_servers(sc.mcp_servers.as_ref(), mcp_overrides.as_ref());
                 }
                 sc
             }
         }
-        Err(e) => {
-            warn!(
-                "worker {tid}: get_task failed while resolving env_overrides: {e} — proceeding with step env only"
-            );
-            step_config.clone()
-        }
+        None => step_config.clone(),
     };
     let step_config = &step_config_owned;
 
@@ -2071,5 +2161,107 @@ mod tests {
         // context itself is a scalar.
         let t5 = serde_json::json!({"context": "not an object"});
         assert!(env_overrides_from_task(&t5).is_empty());
+    }
+
+    // ── env: UI canonical key (gap #6) ──────────────────────
+
+    #[test]
+    fn env_reads_canonical_context_env_key() {
+        // The advanced UI's buildTaskContext writes `context.env`,
+        // not `context.env_overrides`. Worker must accept both.
+        let task = serde_json::json!({
+            "context": {
+                "env": { "FOO": "bar" }
+            }
+        });
+        let m = env_overrides_from_task(&task);
+        assert_eq!(m.get("FOO").map(String::as_str), Some("bar"));
+    }
+
+    #[test]
+    fn env_canonical_key_wins_over_legacy() {
+        let task = serde_json::json!({
+            "context": {
+                "env": { "WHO": "ui" },
+                "env_overrides": { "WHO": "legacy" }
+            }
+        });
+        let m = env_overrides_from_task(&task);
+        assert_eq!(m.get("WHO").map(String::as_str), Some("ui"));
+    }
+
+    // ── mcp_overrides_from_task (gap #6) ────────────────────
+
+    #[test]
+    fn mcp_overrides_reads_canonical_context_mcp() {
+        let task = serde_json::json!({
+            "context": {
+                "mcp": { "fs": { "command": "npx" } }
+            }
+        });
+        assert!(mcp_overrides_from_task(&task).is_some());
+    }
+
+    #[test]
+    fn mcp_overrides_falls_back_to_legacy_key() {
+        let task = serde_json::json!({
+            "context": {
+                "mcp_overrides": { "fs": { "command": "npx" } }
+            }
+        });
+        assert!(mcp_overrides_from_task(&task).is_some());
+    }
+
+    #[test]
+    fn mcp_overrides_none_when_absent_or_scalar() {
+        assert!(mcp_overrides_from_task(&serde_json::json!({})).is_none());
+        assert!(
+            mcp_overrides_from_task(&serde_json::json!({"context": {"mcp": "scalar"}})).is_none()
+        );
+    }
+
+    // ── merge_mcp_servers (gap #6) ──────────────────────────
+
+    #[test]
+    fn merge_mcp_returns_none_for_both_none() {
+        assert!(merge_mcp_servers(None, None).is_none());
+    }
+
+    #[test]
+    fn merge_mcp_returns_base_when_no_overrides() {
+        let base = serde_json::json!({"mcpServers": {"a": 1}});
+        assert_eq!(merge_mcp_servers(Some(&base), None), Some(base));
+    }
+
+    #[test]
+    fn merge_mcp_override_wins_per_server_name() {
+        let base = serde_json::json!({
+            "mcpServers": {
+                "kept": { "command": "base" },
+                "shared": { "command": "base" }
+            }
+        });
+        let overrides = serde_json::json!({
+            "mcpServers": {
+                "shared": { "command": "override" },
+                "added": { "command": "new" }
+            }
+        });
+        let m = merge_mcp_servers(Some(&base), Some(&overrides)).unwrap();
+        let servers = m["mcpServers"].as_object().unwrap();
+        assert_eq!(servers["kept"]["command"], "base");
+        assert_eq!(servers["shared"]["command"], "override");
+        assert_eq!(servers["added"]["command"], "new");
+    }
+
+    #[test]
+    fn merge_mcp_accepts_bare_server_map_shape() {
+        // UI may post either {"mcpServers": {...}} or just {...}.
+        let base = serde_json::json!({"a": { "command": "base" }});
+        let overrides = serde_json::json!({"b": { "command": "new" }});
+        let m = merge_mcp_servers(Some(&base), Some(&overrides)).unwrap();
+        let servers = m["mcpServers"].as_object().unwrap();
+        assert_eq!(servers["a"]["command"], "base");
+        assert_eq!(servers["b"]["command"], "new");
     }
 }

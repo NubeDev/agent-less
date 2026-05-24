@@ -149,7 +149,46 @@ pub fn resolve_qa_config(
     step_name: &str,
     step_json: Option<&serde_json::Value>,
 ) -> Result<QaConfig, QaConfigError> {
-    let raw = step_json.and_then(|s| s.get("qa")).cloned();
+    resolve_qa_config_with_override(step_name, step_json, None)
+}
+
+/// UI-gap #6: like [`resolve_qa_config`] but also accepts a per-task
+/// override block (`task.context.qa_override` written by the advanced
+/// UI). The override is field-wise merged onto the playbook `qa:`
+/// block — any `Some` field in the override replaces the playbook's
+/// value before validation and the safety policy runs. This means
+/// override-supplied fields still go through the same schema check and
+/// the same `Merge`-profile / irreversible upgrade pass, so a UI
+/// override cannot bypass safety. An empty / null / missing override
+/// is a no-op (behaves identically to the no-override path).
+pub fn resolve_qa_config_with_override(
+    step_name: &str,
+    step_json: Option<&serde_json::Value>,
+    task_qa_override: Option<&serde_json::Value>,
+) -> Result<QaConfig, QaConfigError> {
+    let mut raw = step_json.and_then(|s| s.get("qa")).cloned();
+
+    if let Some(ovr) = task_qa_override
+        && !ovr.is_null()
+    {
+        let Some(ovr_obj) = ovr.as_object() else {
+            return Err(QaConfigError::Malformed(
+                "context.qa_override must be an object".into(),
+            ));
+        };
+        // Start from the playbook block (object, null, or missing) and
+        // splat the override fields on top. Any non-object playbook
+        // value is discarded — the override defines the new base.
+        let mut merged = raw
+            .as_ref()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        for (k, v) in ovr_obj {
+            merged.insert(k.clone(), v.clone());
+        }
+        raw = Some(serde_json::Value::Object(merged));
+    }
+
     let Some(raw) = raw else {
         return Ok(QaConfig::human_default());
     };
@@ -380,5 +419,73 @@ mod tests {
         let cfg = resolve_qa_config("implement", Some(&json!({"qa": {"stuck_detector": false}})))
             .unwrap();
         assert!(!cfg.stuck_detector);
+    }
+
+    // ── UI-gap #6: per-task qa_override merge ──────────────
+
+    #[test]
+    fn task_qa_override_replaces_playbook_field() {
+        // Playbook says ai/confidence; task overrides accept to always_human.
+        let step = json!({"qa": {"responder": "ai", "accept": "confidence"}});
+        let ovr = json!({"accept": "always_human"});
+        let cfg = resolve_qa_config_with_override("implement", Some(&step), Some(&ovr)).unwrap();
+        assert_eq!(cfg.responder, Responder::Ai);
+        assert_eq!(cfg.accept, AcceptMode::AlwaysHuman);
+        assert!(!cfg.forced_second_pass);
+    }
+
+    #[test]
+    fn task_qa_override_supplies_missing_playbook_block() {
+        // Step has no qa block at all; override creates the whole policy.
+        let ovr = json!({"responder": "ai", "accept": "always_ai"});
+        let cfg = resolve_qa_config_with_override("implement", None, Some(&ovr)).unwrap();
+        assert_eq!(cfg.responder, Responder::Ai);
+        assert_eq!(cfg.accept, AcceptMode::AlwaysAi);
+    }
+
+    #[test]
+    fn task_qa_override_still_runs_safety_upgrade() {
+        // Override sets accept=confidence on the deliver step → must
+        // get force-upgraded to second_pass like the playbook would.
+        let ovr = json!({"responder": "ai", "accept": "confidence"});
+        let cfg = resolve_qa_config_with_override("deliver", None, Some(&ovr)).unwrap();
+        assert_eq!(cfg.accept, AcceptMode::SecondPass);
+        assert!(cfg.forced_second_pass);
+    }
+
+    #[test]
+    fn task_qa_override_validates_via_same_schema() {
+        // Garbage accept value must fail with the same error as a
+        // playbook-supplied garbage value would.
+        let ovr = json!({"accept": "bogus"});
+        let err = resolve_qa_config_with_override("implement", None, Some(&ovr)).unwrap_err();
+        assert!(matches!(err, QaConfigError::BadAccept(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn task_qa_override_null_is_noop() {
+        let step = json!({"qa": {"responder": "ai", "accept": "always_ai"}});
+        let cfg =
+            resolve_qa_config_with_override("implement", Some(&step), Some(&json!(null))).unwrap();
+        assert_eq!(cfg.responder, Responder::Ai);
+        assert_eq!(cfg.accept, AcceptMode::AlwaysAi);
+    }
+
+    #[test]
+    fn task_qa_override_non_object_rejected() {
+        let err =
+            resolve_qa_config_with_override("implement", None, Some(&json!("nope"))).unwrap_err();
+        assert!(matches!(err, QaConfigError::Malformed(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn task_qa_override_partial_merge_keeps_playbook_fields() {
+        // Playbook: ai/confidence/min=0.9; override only bumps min.
+        let step = json!({"qa": {"responder": "ai", "accept": "always_ai", "min_confidence": 0.9}});
+        let ovr = json!({"min_confidence": 0.5});
+        let cfg = resolve_qa_config_with_override("implement", Some(&step), Some(&ovr)).unwrap();
+        assert_eq!(cfg.responder, Responder::Ai);
+        assert_eq!(cfg.accept, AcceptMode::AlwaysAi);
+        assert!((cfg.min_confidence - 0.5).abs() < 1e-6);
     }
 }

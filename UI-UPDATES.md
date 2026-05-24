@@ -374,42 +374,46 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ in progress:
-   `env_overrides` ✅ shipped; the other 11 fields are still ignored
-   by the runtime. UI-4 persists `qa_override`, `session_mode`,
-   `preserve_worktree`, `knowledge_pin`, `knowledge_exclude_tags`,
-   `verifications`, `fail_fast`, `extra_test_cmd`, `reports`,
-   `integrations`, `env_overrides`, and `mcp_overrides` into
-   `task.context` JSONB, but:
-   - The API ([repository/tasks.rs](apps/api/src/repository/tasks.rs))
-     persists `context` as opaque JSON.
-   - The worker only reads `spec`, `description`, `notes`,
-     `acceptance_criteria`, `files`, `decompose`, and `model` from
-     `context` ([engine/prompt.rs](apps/orchestra/src/engine/prompt.rs),
-     [engine/spawner.rs](apps/orchestra/src/engine/spawner.rs)), plus
-     `env_overrides` (new — see below).
-   - `qa_config` resolution reads the playbook `qa:` block only —
-     `context.qa_override` is dropped.
-   - `mcp_overrides` would need to merge into `step_config.mcp_servers`
-     in [engine/worker.rs](apps/orchestra/src/engine/worker.rs) before
-     the ResolvedStep is built. (Mirror the env_overrides pattern.)
+6. **Advanced-task overrides round-trip** — ⚠️ in progress: 3 of 12
+   fields shipped (`env`, `mcp`, `qa_override`); the other 9 are still
+   ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
+   `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
+   `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
+   `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
+   and `mcp` into `task.context` JSONB.
 
-   **Shipped**: `env_overrides` — `run_worker` calls
-   `env_overrides_from_task` (see `engine/worker.rs`) to extract the
-   string-only sub-map of `task.context.env_overrides` and merge it
-   into the cloned `StepConfig.env` immediately before
-   `execute_via_provider`. Task overrides win over playbook `step.env`
-   (last writer in the chain). Malformed values (non-string, missing
-   keys, non-object `context`) degrade silently to a no-op so the
-   advanced UI can never block worker progress. 3 unit tests cover
-   extract / filter-non-strings / malformed paths.
+   **Shipped**:
+   - `qa_override` → `run_worker` fetches the task once and passes
+     `context.qa_override` to `resolve_qa_config_with_override`
+     ([engine/worker.rs](apps/orchestra/src/engine/worker.rs)).
+   - `env` (UI canonical name) and the legacy `env_overrides` →
+     `env_overrides_from_task` extracts the string-only sub-map and
+     merges it into `step_config.env`. Task overrides win over
+     playbook `step.env`.
+   - `mcp` (UI canonical name) and the legacy `mcp_overrides` →
+     `mcp_overrides_from_task` + `merge_mcp_servers` deep-merge
+     per-server-name into `step_config.mcp_servers`, accepting both
+     wrapped (`{"mcpServers": {…}}`) and bare (`{"name": {…}}`)
+     shapes.
+
+   All three reuse a single `api.get_task()` call up front; malformed
+   values degrade silently so the advanced UI can never block worker
+   progress. 11 unit tests in `engine::worker::tests` cover the env
+   and MCP paths (extract, filter-non-strings, malformed, canonical
+   vs legacy key, merge semantics, both UI shapes).
+
+   **Naming mismatch resolved**: the earlier verification report
+   listed `context.env_overrides` / `context.mcp_overrides`, but
+   `buildTaskContext` actually emits `context.env` / `context.mcp`.
+   The worker now accepts both names, with the UI canonical name
+   winning when both are present.
 
    Each remaining field is a discrete worker change; until those land,
-   the advanced UI must NOT be shipped as "supported" — it stores
-   intent that the runtime silently discards. Recommended order for
-   the rest: `mcp_overrides` (smallest blast radius, mirrors the
-   env_overrides merge), then `qa_override` (single resolver tweak in
-   `engine/qa_config.rs`), then the larger features.
+   the advanced UI must NOT be shipped as "supported" for them — it
+   stores intent that the runtime silently discards. Remaining:
+   `session_mode`, `preserve_worktree`, `knowledge.pin_ids`,
+   `knowledge.exclude_tags`, `verifications.*`, `reports`,
+   `integrations_allowed`, `model_override`, `budget_usd_cap`.
 
 ---
 
