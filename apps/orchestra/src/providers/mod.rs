@@ -18,6 +18,7 @@ pub mod sentinel;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -97,6 +98,23 @@ pub struct TaskContext {
     /// content instead of building a JSON envelope from the other fields.
     /// Used by plan_handler and chat summarization.
     pub user_prompt: Option<String>,
+    /// ADR 0001: session reuse policy + handle. `None` means the task
+    /// is in `per_step` mode (default) — providers should treat each
+    /// spawn as a fresh conversation. `Some` means `shared` mode — the
+    /// Claude Code provider uses `--session-id` on first spawn and
+    /// `--resume` thereafter; other providers log a one-time fallback
+    /// and continue exactly as today.
+    pub session: Option<SessionHandle>,
+}
+
+/// ADR 0001: shared-session handle threaded from the spawner into
+/// each provider invocation. `is_first_spawn` is `true` only for the
+/// very first step of a task; subsequent spawns (next pipeline step,
+/// QA re-run, orchestra restart) see `false` and should resume.
+#[derive(Debug, Clone)]
+pub struct SessionHandle {
+    pub id: Uuid,
+    pub is_first_spawn: bool,
 }
 
 /// Credentials and endpoint configuration for a provider.
@@ -273,6 +291,7 @@ mod tests {
             working_dir: None,
             log_file: None,
             user_prompt: None,
+            session: None,
         }
     }
 

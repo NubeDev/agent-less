@@ -601,6 +601,7 @@ async fn run_headless(args: &[String]) -> Result<()> {
             None,  // no encryption in headless mode
             false, // don't upload logs
             false, // don't store diffs
+            None,  // headless mode does not support session reuse
         )
         .await
         {

@@ -136,6 +136,62 @@ pub(crate) fn task_overrides_from_context(
     (model, budget_cap)
 }
 
+/// ADR 0001: extract `context.session_mode` from a loaded task JSON.
+/// Returns `true` only for the literal string `"shared"`; everything
+/// else (missing field, `"per_step"`, non-string, typos) means the
+/// default per-step behaviour.
+pub(crate) fn session_mode_is_shared(task: Option<&serde_json::Value>) -> bool {
+    task.and_then(|t| t["context"]["session_mode"].as_str())
+        .map(|s| s.trim().eq_ignore_ascii_case("shared"))
+        .unwrap_or(false)
+}
+
+/// ADR 0001: resolve the session handle for this spawn. Returns
+/// `None` for `per_step` mode (the default). Returns `Some` for
+/// `shared` mode — either reusing the existing `task.session_id` or
+/// allocating a fresh UUID and persisting it via the API. The
+/// `is_first_spawn` flag distinguishes which Claude CLI flag the
+/// provider should use (`--session-id` vs `--resume`).
+///
+/// Persistence happens BEFORE the spawn returns so a crashed-spawn
+/// replay never orphans the prior session. Persistence failure
+/// degrades gracefully to per_step rather than blocking the task —
+/// session reuse is a UX optimisation, not a correctness requirement.
+pub(crate) async fn build_session_handle(
+    api: &dyn TaskSource,
+    task: Option<&serde_json::Value>,
+    task_id: &str,
+) -> Option<crate::providers::SessionHandle> {
+    if !session_mode_is_shared(task) {
+        return None;
+    }
+
+    let existing = task
+        .and_then(|t| t["session_id"].as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+    if let Some(id) = existing {
+        return Some(crate::providers::SessionHandle {
+            id,
+            is_first_spawn: false,
+        });
+    }
+
+    let id = uuid::Uuid::new_v4();
+    match api.set_task_session(task_id, &id.to_string()).await {
+        Ok(_) => Some(crate::providers::SessionHandle {
+            id,
+            is_first_spawn: true,
+        }),
+        Err(e) => {
+            tracing::warn!(
+                "spawn {task_id}: session_mode=shared but set_task_session failed: {e} — falling back to per_step for this spawn"
+            );
+            None
+        }
+    }
+}
+
 pub async fn spawn_worker(
     api: &Arc<dyn TaskSource>,
     config: &Config,
@@ -292,6 +348,12 @@ pub async fn spawn_worker(
     // the precedence rules without standing up a full spawn.
     let (task_model, task_budget_cap) = task_overrides_from_context(task_data.as_ref());
 
+    // ADR 0001: resolve session reuse policy. For per_step (default)
+    // this is None and providers spawn fresh each time; for shared,
+    // this allocates a stable UUID on first spawn and reuses it on
+    // every subsequent spawn within the task.
+    let session_handle = build_session_handle(api.as_ref(), task_data.as_ref(), task_id).await;
+
     // Build step-specific config from playbook JSONB with hardcoded fallbacks
     let mut step_config = worker::StepConfig::for_step(
         &step_name,
@@ -387,6 +449,7 @@ pub async fn spawn_worker(
                 dek.as_ref(),
                 upload_logs,
                 store_diffs,
+                session_handle.clone(),
             )
             .await
             {
@@ -1011,5 +1074,53 @@ mod tests {
         let task = serde_json::json!({"context": {"budget_usd_cap": "5"}});
         let (_, b) = task_overrides_from_context(Some(&task));
         assert!(b.is_none());
+    }
+
+    // ── ADR 0001: session_mode parsing ─────────────────────────────
+
+    #[test]
+    fn session_mode_default_per_step() {
+        assert!(!session_mode_is_shared(None));
+        assert!(!session_mode_is_shared(Some(&serde_json::json!({}))));
+        assert!(!session_mode_is_shared(Some(
+            &serde_json::json!({"context": {}})
+        )));
+    }
+
+    #[test]
+    fn session_mode_per_step_explicit() {
+        let task = serde_json::json!({"context": {"session_mode": "per_step"}});
+        assert!(!session_mode_is_shared(Some(&task)));
+    }
+
+    #[test]
+    fn session_mode_shared_recognised() {
+        let task = serde_json::json!({"context": {"session_mode": "shared"}});
+        assert!(session_mode_is_shared(Some(&task)));
+    }
+
+    #[test]
+    fn session_mode_case_insensitive_and_trimmed() {
+        for v in ["SHARED", " Shared ", "shared"] {
+            let task = serde_json::json!({"context": {"session_mode": v}});
+            assert!(
+                session_mode_is_shared(Some(&task)),
+                "expected shared for {v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_mode_ignores_typos_and_non_strings() {
+        for v in serde_json::json!(["sharred", "share", "PERSISTENT", 1, true, null])
+            .as_array()
+            .unwrap()
+        {
+            let task = serde_json::json!({"context": {"session_mode": v}});
+            assert!(
+                !session_mode_is_shared(Some(&task)),
+                "expected not-shared for {v}"
+            );
+        }
     }
 }

@@ -488,6 +488,7 @@ pub async fn run_worker(
     dek: Option<&Dek>,
     upload_logs: bool,
     store_diffs: bool,
+    session_handle: Option<crate::providers::SessionHandle>,
 ) -> Result<WorkerResult> {
     let tid = TaskId::new(task_id);
     let branch_name = tid.branch_name();
@@ -656,6 +657,7 @@ pub async fn run_worker(
             &user_prompt,
             &worktree_path,
             &log_file,
+            session_handle.clone(),
         )
         .await;
 
@@ -1114,6 +1116,7 @@ async fn execute_via_provider(
     user_prompt: &str,
     worktree_path: &Path,
     log_file: &Path,
+    session_handle: Option<crate::providers::SessionHandle>,
 ) -> (Result<()>, f64, u64, u64, u64, String, bool) {
     let tid = TaskId::new(task_id);
 
@@ -1266,6 +1269,7 @@ async fn execute_via_provider(
         working_dir: Some(worktree_path.to_path_buf()),
         log_file: Some(log_file.to_path_buf()),
         user_prompt: None,
+        session: session_handle.clone(),
     };
 
     // 6. Execute via provider — errors become blockers, not panics
@@ -1472,6 +1476,7 @@ mod tests {
             "user prompt",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1521,6 +1526,7 @@ mod tests {
             "user prompt",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1564,6 +1570,7 @@ mod tests {
             "user prompt",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1600,6 +1607,7 @@ mod tests {
             "user prompt",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1657,6 +1665,7 @@ mod tests {
             "user",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1707,6 +1716,7 @@ mod tests {
             "user",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1757,6 +1767,7 @@ mod tests {
             "user",
             &worktree,
             &log_file,
+            None,
         )
         .await;
 
@@ -1839,6 +1850,7 @@ mod tests {
                 "user prompt",
                 &worktree,
                 &log_file,
+                None,
             )
             .await;
 

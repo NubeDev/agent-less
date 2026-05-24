@@ -499,6 +499,14 @@ impl ProjectsApi {
             .await
     }
 
+    pub async fn set_task_session(&self, task_id: &str, session_id: &str) -> Result<Value> {
+        self.post(
+            &format!("/tasks/{task_id}/session"),
+            &serde_json::json!({ "session_id": session_id }),
+        )
+        .await
+    }
+
     // ── Task Log operations ────────────────────────────────────
 
     /// Upload a task execution log to the API.
@@ -912,6 +920,10 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
 
     async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>> {
         ProjectsApi::list_qa_items_for_task(self, task_id, status).await
+    }
+
+    async fn set_task_session(&self, task_id: &str, session_id: &str) -> Result<Value> {
+        ProjectsApi::set_task_session(self, task_id, session_id).await
     }
 
     async fn post_event(&self, project_id: &str, body: &Value) -> Result<Value> {

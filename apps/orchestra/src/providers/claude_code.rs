@@ -57,7 +57,15 @@ impl StepProvider for ClaudeCodeProvider {
         let system_prompt = step.system_prompt.as_deref().unwrap_or("");
         let user_prompt = task.user_prompt.as_deref().unwrap_or(&task.project_context);
 
-        run_claude(system_prompt, user_prompt, worktree, log_file, step).await?;
+        run_claude(
+            system_prompt,
+            user_prompt,
+            worktree,
+            log_file,
+            step,
+            task.session.as_ref(),
+        )
+        .await?;
         let (cost, input_tokens, output_tokens, turns, stop, is_err, result_text) =
             parse_result_from_log(log_file).await;
 
@@ -151,6 +159,7 @@ async fn run_claude(
     worktree: &Path,
     log_file: &Path,
     config: &ResolvedStep,
+    session: Option<&crate::providers::SessionHandle>,
 ) -> anyhow::Result<()> {
     // Temp dir holds MCP config (if any). Prompts go directly on argv /
     // stdin, no shell quoting required.
@@ -168,12 +177,30 @@ async fn run_claude(
         "-p".into(),
         "--system-prompt".into(),
         system_prompt.to_string(),
-        "--no-session-persistence".into(),
         "--dangerously-skip-permissions".into(),
         "--output-format".into(),
         "stream-json".into(),
         "--verbose".into(),
     ];
+
+    // ADR 0001: session reuse for shared-mode tasks.
+    // - None (per_step, default): pass --no-session-persistence so
+    //   Claude does not write the session to disk.
+    // - Some + is_first_spawn: --session-id <uuid> forces Claude to
+    //   adopt our id so subsequent spawns can resume.
+    // - Some + !is_first_spawn: --resume <uuid> loads the prior
+    //   conversation, keeping continuity across pipeline steps.
+    match session {
+        None => args.push("--no-session-persistence".into()),
+        Some(s) if s.is_first_spawn => {
+            args.push("--session-id".into());
+            args.push(s.id.to_string());
+        }
+        Some(s) => {
+            args.push("--resume".into());
+            args.push(s.id.to_string());
+        }
+    }
 
     if let Some(m) = &config.model {
         args.push("--model".into());

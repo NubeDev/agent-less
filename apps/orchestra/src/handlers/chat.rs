@@ -651,6 +651,7 @@ async fn summarize_via_provider(
         working_dir: None,
         log_file: None,
         user_prompt: Some(prompt),
+        session: None,
     };
 
     match provider.execute(&step, &task_ctx, &provider_cfg).await {
@@ -1282,6 +1283,7 @@ async fn stream_fallback_provider(
         working_dir: None,
         log_file: None,
         user_prompt: Some(user_prompt.to_string()),
+        session: None,
     };
 
     match provider.execute(&step, &task_ctx, provider_cfg).await {

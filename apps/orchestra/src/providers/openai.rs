@@ -65,6 +65,13 @@ impl StepProvider for OpenAIProvider {
         task: &TaskContext,
         config: &ProviderConfig,
     ) -> anyhow::Result<StepOutput> {
+        if task.session.is_some() {
+            tracing::info!(
+                provider = "openai",
+                task_id = %task.task_id,
+                "session_mode=shared but provider lacks session reuse — using per_step semantics"
+            );
+        }
         let base_url = config
             .base_url
             .as_deref()
@@ -314,6 +321,7 @@ mod tests {
             working_dir: None,
             log_file: None,
             user_prompt: None,
+            session: None,
         }
     }
 

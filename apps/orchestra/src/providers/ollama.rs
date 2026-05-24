@@ -102,6 +102,13 @@ impl StepProvider for OllamaProvider {
         task: &TaskContext,
         config: &ProviderConfig,
     ) -> anyhow::Result<StepOutput> {
+        if task.session.is_some() {
+            tracing::info!(
+                provider = "ollama",
+                task_id = %task.task_id,
+                "session_mode=shared but provider lacks session reuse — using per_step semantics"
+            );
+        }
         let base_url = Self::base_url(config);
         let model = Self::model(config, step);
         let url = format!("{}/api/chat", base_url.trim_end_matches('/'));
@@ -280,6 +287,7 @@ mod tests {
             working_dir: None,
             log_file: None,
             user_prompt: None,
+            session: None,
         }
     }
 

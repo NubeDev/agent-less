@@ -407,6 +407,10 @@ impl TaskSource for OrchestraTaskSource {
         self.api.list_qa_items_for_task(task_id, status).await
     }
 
+    async fn set_task_session(&self, task_id: &str, session_id: &str) -> Result<Value> {
+        self.api.set_task_session(task_id, session_id).await
+    }
+
     async fn list_observations(
         &self,
         project_id: &str,

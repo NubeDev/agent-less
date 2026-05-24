@@ -139,6 +139,12 @@ pub trait TaskSource: Send + Sync {
     /// List QA items for a task, optionally filtered by status
     /// (`"resolved"`, `"pending"`, …). Used by the `qa_log` report generator.
     async fn list_qa_items_for_task(&self, task_id: &str, status: &str) -> Result<Vec<Value>>;
+
+    /// ADR 0001: persist a freshly allocated Claude Code session id for
+    /// a task. Idempotent at the API layer (uses `COALESCE`), so a
+    /// crashed-spawn replay calling this twice never orphans the prior
+    /// session by overwriting its id.
+    async fn set_task_session(&self, task_id: &str, session_id: &str) -> Result<Value>;
     async fn list_observations(
         &self,
         project_id: &str,

@@ -74,6 +74,16 @@ impl StepProvider for AnthropicProvider {
         task: &TaskContext,
         config: &ProviderConfig,
     ) -> anyhow::Result<StepOutput> {
+        if task.session.is_some() {
+            // ADR 0001: this provider has no session-reuse concept;
+            // fall back to per_step. Logged so the UI's "silent
+            // fallback" promise is observable in production.
+            tracing::info!(
+                provider = "anthropic",
+                task_id = %task.task_id,
+                "session_mode=shared but provider lacks session reuse — using per_step semantics"
+            );
+        }
         let base_url = config
             .base_url
             .as_deref()
@@ -289,6 +299,7 @@ mod tests {
             working_dir: None,
             log_file: None,
             user_prompt: None,
+            session: None,
         }
     }
 

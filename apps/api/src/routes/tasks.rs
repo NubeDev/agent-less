@@ -1227,7 +1227,10 @@ async fn set_task_session(
     let task = state.db.get_task_by_id(task_id).await?;
     ensure_member(state.db.as_ref(), agent_id, user_id, task).await?;
 
-    let updated = state.db.set_task_session_id(task_id, req.session_id).await?;
+    let updated = state
+        .db
+        .set_task_session_id(task_id, req.session_id)
+        .await?;
     Ok(Json(updated))
 }
 

@@ -516,6 +516,12 @@ impl TaskSource for LocalTaskSource {
         Ok(vec![])
     }
 
+    async fn set_task_session(&self, _task_id: &str, _session_id: &str) -> Result<Value> {
+        // Local mode has no DB persistence; session reuse is meaningless
+        // here but the call must succeed so the spawner can proceed.
+        Ok(json!({}))
+    }
+
     async fn list_observations(
         &self,
         _project_id: &str,
