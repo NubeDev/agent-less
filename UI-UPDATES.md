@@ -110,8 +110,11 @@ Angular 21 app, do **not** build a parallel React app. Reasons:
   mode who want to flip back.
 
 ### Tests
-- [ ] First-login redirect — covered manually; not yet in Playwright.
-- [ ] Pref-stickiness across refreshes — covered manually.
+- [x] First-login redirect —
+  [apps/web/e2e/default-route.spec.ts](apps/web/e2e/default-route.spec.ts).
+- [x] Pref-stickiness across visits — same spec, asserts
+  `localStorage['diraigent.uiMode']` survives navigation and the
+  guard re-reads it on every visit to `/`.
 
 ### Exit
 - Most users never see the existing dashboard unless they ask for it. ✅
