@@ -373,6 +373,12 @@ pub struct Task {
     /// Who owns the task state machine: "api" (default) or "orchestra".
     #[serde(default = "default_state_managed_by")]
     pub state_managed_by: String,
+    /// ADR 0001: Claude Code session id, allocated by the spawner on
+    /// the first step of a task whose `context.session_mode = "shared"`.
+    /// `None` for the default `per_step` mode and for tasks that have
+    /// not yet spawned. Reused on every subsequent spawn (next pipeline
+    /// step, QA re-run, orchestra restart) via `claude --resume`.
+    pub session_id: Option<Uuid>,
 }
 
 fn default_state_managed_by() -> String {
@@ -1458,6 +1464,14 @@ pub struct TaskCostUpdate {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cost_usd: f64,
+}
+
+/// Request body for `POST /tasks/{task_id}/session` — ADR 0001.
+/// Orchestra-only: persist the Claude Code session id allocated on
+/// the first shared-mode spawn. Idempotent at the repo layer.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct SetTaskSession {
+    pub session_id: Uuid,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]

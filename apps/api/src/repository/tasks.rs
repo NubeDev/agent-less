@@ -457,6 +457,30 @@ pub async fn update_task_cost(
     Ok(task)
 }
 
+/// ADR 0001: persist the Claude Code session id on first spawn of a
+/// task whose `context.session_mode = "shared"`. Idempotent — if the
+/// row already has a session_id this is a no-op so a crashed-spawn
+/// replay never orphans the prior session by overwriting its id.
+pub async fn set_task_session_id(
+    pool: &PgPool,
+    task_id: Uuid,
+    session_id: Uuid,
+) -> Result<Task, AppError> {
+    let task = sqlx::query_as::<_, Task>(
+        "UPDATE diraigent.task
+         SET session_id = COALESCE(session_id, $2),
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING *",
+    )
+    .bind(task_id)
+    .bind(session_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(task)
+}
+
 // ── Task Updates ──
 
 pub async fn create_task_update(

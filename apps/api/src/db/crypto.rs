@@ -416,6 +416,13 @@ impl DiraigentDb for CryptoDb {
             cost_usd
         )
     }
+    async fn set_task_session_id(
+        &self,
+        task_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Task, AppError> {
+        delegate!(self, set_task_session_id, task_id, session_id)
+    }
 
     // ── Dependencies (no encrypted fields) ──
     async fn add_dependency(

@@ -83,6 +83,10 @@ pub trait DiraigentDb: Send + Sync {
         cost_usd: f64,
     ) -> Result<Task, AppError>;
 
+    // ── Task Session (ADR 0001) ──────────────────────────────────────────────
+    async fn set_task_session_id(&self, task_id: Uuid, session_id: Uuid)
+    -> Result<Task, AppError>;
+
     // ── Dependencies ──────────────────────────────────────────────────────────
     async fn add_dependency(
         &self,

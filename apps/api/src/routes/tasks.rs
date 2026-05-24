@@ -69,6 +69,7 @@ pub fn routes() -> Router<AppState> {
         .route("/tasks/{task_id}/children", get(list_task_children))
         .route("/tasks/{task_id}/related", get(get_related_items))
         .route("/tasks/{task_id}/cost", post(record_task_cost))
+        .route("/tasks/{task_id}/session", post(set_task_session))
 }
 
 async fn create_task(
@@ -1207,6 +1208,26 @@ async fn record_task_cost(
         .update_task_cost(task_id, req.input_tokens, req.output_tokens, req.cost_usd)
         .await?;
 
+    Ok(Json(updated))
+}
+
+/// `POST /tasks/{task_id}/session`
+///
+/// ADR 0001: persist the Claude Code session id on first shared-mode
+/// spawn. Called by the orchestra spawner before invoking Claude.
+/// Idempotent via `COALESCE` at the repo layer so a crashed-spawn
+/// replay never orphans the prior session.
+async fn set_task_session(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Path(task_id): Path<Uuid>,
+    Json(req): Json<SetTaskSession>,
+) -> Result<Json<Task>, AppError> {
+    let task = state.db.get_task_by_id(task_id).await?;
+    ensure_member(state.db.as_ref(), agent_id, user_id, task).await?;
+
+    let updated = state.db.set_task_session_id(task_id, req.session_id).await?;
     Ok(Json(updated))
 }
 

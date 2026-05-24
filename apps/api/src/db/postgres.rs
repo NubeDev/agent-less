@@ -116,6 +116,13 @@ impl DiraigentDb for PostgresDb {
     ) -> Result<Task, AppError> {
         repository::update_task_cost(&self.0, task_id, input_tokens, output_tokens, cost_usd).await
     }
+    async fn set_task_session_id(
+        &self,
+        task_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Task, AppError> {
+        repository::set_task_session_id(&self.0, task_id, session_id).await
+    }
 
     // Dependencies
     async fn add_dependency(
