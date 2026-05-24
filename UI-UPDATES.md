@@ -382,11 +382,14 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ in progress: 9 of 12
-   fields shipped (`env`, `mcp`, `qa_override`, `model_override`,
-   `budget_usd_cap`, `preserve_worktree`, `knowledge.{pin_ids,exclude_tags}`,
-   `integrations_allowed`, `reports`);
-   the other 3 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
+6. **Advanced-task overrides round-trip** — ⚠️ 10 of 12 fields shipped
+   (`env`, `mcp`, `qa_override`, `model_override`, `budget_usd_cap`,
+   `preserve_worktree`, `knowledge.{pin_ids,exclude_tags}`,
+   `integrations_allowed`, `reports`, `session_mode`).
+   Only `verifications.{ids,fail_fast,extra_test_cmd}` is still
+   ignored by the runtime — deferred per the original handover
+   recommendation since no verifications subsystem exists yet and
+   no user has asked for it. UI-4 persists `qa_override`, `session_mode`,
    `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
    `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
    `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
@@ -483,10 +486,33 @@ panels show "no data yet").
      kinds are silently dropped for forward compatibility. 10 unit
      tests cover each generator + the requested_kinds parser.
 
+   - `session_mode` → ADR 0001 in [docs/adr/0001-task-session-mode.md](docs/adr/0001-task-session-mode.md).
+     Migration 051 adds `session_id uuid` to `diraigent.task` (separate
+     from `context` JSONB so a UI re-save can't clobber an in-flight
+     session pointer) with a partial index on populated rows.
+     [`build_session_handle`](apps/orchestra/src/engine/spawner.rs)
+     allocates a UUID on the first shared-mode spawn, persists it via
+     `POST /v1/tasks/{id}/session` BEFORE invoking the provider (so a
+     crashed-spawn replay never orphans the prior session), and
+     returns `Some(SessionHandle)` with `is_first_spawn` set correctly.
+     Persistence failure degrades to per_step rather than blocking the
+     task. New `session: Option<SessionHandle>` field on `TaskContext`
+     threads the handle to providers without a trait API break.
+     [claude_code::run_claude](apps/orchestra/src/providers/claude_code.rs)
+     branches on the handle: `None` keeps `--no-session-persistence`
+     (today's behaviour), first spawn uses `--session-id <uuid>`,
+     subsequent spawns use `--resume <uuid>`. Other providers
+     (anthropic/openai/copilot/ollama) log a one-time `info!` and
+     continue exactly as today, honouring the UI's "silent fallback"
+     promise observably. Responder backend stays per-spawn so QA
+     reasoning doesn't pollute the implementation session. 5 unit
+     tests cover the parser (default, explicit per_step, shared,
+     case-insensitive, typos / non-strings).
+
    Each remaining field is a discrete worker change; until those land,
    the advanced UI must NOT be shipped as "supported" for them — it
    stores intent that the runtime silently discards. Remaining:
-   `session_mode`, `verifications.*`.
+   `verifications.*` (deferred — no subsystem exists yet).
 
 ---
 
