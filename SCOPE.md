@@ -403,9 +403,13 @@ SoW-2.
 8. **No rate-limit on QA emissions.** A confused agent could emit dozens
    of sentinels in one log. Add max-per-step cap (e.g. 3) in the parser
    with a WARN if exceeded.
-9. **QA item lifecycle on task cancellation.** If a task is cancelled
-   while a human QA is pending, cascade `qa_item.status = resolved
-   (task_cancelled)`. Add to SoW-2 or as a follow-up.
+9. **QA item lifecycle on task cancellation.** ✅ Implemented.
+   `repository::resolve_pending_qa_for_cancelled_task` is invoked from
+   `routes/tasks::transition_task` on any `* → cancelled` transition;
+   pending QAs flip to `resolved` with `metadata.cancellation_reason =
+   'task_cancelled'`. Idempotent. Already-resolved/escalated rows are
+   untouched. Outcome stays `unknown` (cancellation gives no SoW-4
+   signal). Integration test `qa_cancelled_task_cascades_pending_to_resolved`.
 
 ### Operator gaps
 
@@ -413,7 +417,8 @@ SoW-2.
     block as the agent emitted it) for debugging "why did this fire?".
 11. **QA velocity metrics.** Average human answer time, AI confidence
     distribution, accept rate. Needs SoW-4 telemetry + a dashboard query.
-12. **Surprise billing risk.** SoW-2's re-run re-pays the full step
-    budget (no provider session resume exists). Document this in the
-    user-facing playbook docs so people aren't surprised by the cost
-    of `second_pass` on a budget-heavy step.
+12. **Surprise billing risk.** ✅ Documented in `apps/orchestra/CLAUDE.md`
+    under "QA Sentinels & `qa:` Block → Surprise billing". Covers re-run
+    additive cost accounting, `second_pass` doubling, the stuck-detector
+    safety net, and escape hatches (`always_ai` + tight `expires_at_secs`,
+    or `retriable: false`).
