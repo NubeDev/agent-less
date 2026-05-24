@@ -252,19 +252,27 @@ pub async fn resolve_step(
         return ("implement".to_string(), None);
     };
 
+    // Fallback step name derived from the task's current state. The API
+    // sets `task.state` to the step name when a worker is claimed for
+    // that step (e.g. "review", "merge", "dream"), so when repo-playbook
+    // resolution can't run we still classify the step correctly for
+    // loop-detection and prompt selection. Lifecycle states fall back to
+    // "implement" — the previous hardcoded default.
+    let fallback_name = step_name_from_state(task["state"].as_str().unwrap_or(""));
+
     let playbook_name = task["playbook_name"].as_str().unwrap_or("");
     let current_step = task["playbook_step"].as_u64().unwrap_or(0);
 
     if playbook_name.is_empty() {
-        return ("implement".to_string(), None);
+        return (fallback_name, None);
     }
 
     let Some(root) = git_root else {
-        return ("implement".to_string(), None);
+        return (fallback_name, None);
     };
     let Some(playbook) = repo_playbooks::find_playbook_by_name(root, playbook_name) else {
         warn!("resolve_step: repo playbook '{playbook_name}' not found");
-        return ("implement".to_string(), None);
+        return (fallback_name, None);
     };
     let steps = playbook.steps.as_array().cloned().unwrap_or_default();
     if let Some(step) = steps.get(current_step as usize) {
@@ -277,10 +285,32 @@ pub async fn resolve_step(
             step.clone()
         };
 
-        let name = resolved["name"].as_str().unwrap_or("implement").to_string();
+        let name = resolved["name"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or(fallback_name);
         (name, Some(resolved))
     } else {
-        ("implement".to_string(), None)
+        (fallback_name, None)
+    }
+}
+
+/// Derive a step name from a task `state` string. Returns "implement"
+/// for any lifecycle state (ready/backlog/done/cancelled/*_review/wait:*)
+/// or empty input; otherwise returns the state verbatim so downstream
+/// classification via `StepProfile::for_step` still works.
+fn step_name_from_state(state: &str) -> String {
+    let trimmed = state.trim();
+    let is_lifecycle = trimmed.is_empty()
+        || matches!(
+            trimmed,
+            "ready" | "backlog" | "done" | "cancelled" | "human_review" | "ai_review"
+        )
+        || trimmed.starts_with("wait:");
+    if is_lifecycle {
+        "implement".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -944,7 +974,7 @@ async fn find_project_id_for_repo(
 mod tests {
     use super::*;
     use crate::project::api::ProjectsApi;
-    use wiremock::matchers::{body_json, method, path, path_regex};
+    use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn standard_playbook() -> serde_json::Value {
@@ -973,35 +1003,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_at_review_step_regresses_to_implement() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(task_json("ready", 1, "pb-1")))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(standard_playbook()))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("PUT"))
-            .and(path("/tasks/task-1"))
-            .and(body_json(serde_json::json!({"playbook_step": 0})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let api = ProjectsApi::new(&server.uri(), "agent-1");
-        let result = check_next_step(&api, "task-1", None).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn ready_at_implement_step_does_not_regress() {
         let server = MockServer::start().await;
 
@@ -1027,35 +1028,6 @@ mod tests {
         let api = ProjectsApi::new(&server.uri(), "agent-1");
         let result = check_next_step(&api, "task-1", None).await;
         assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn check_next_step_get_playbook_failure_returns_err() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(task_json("ready", 1, "pb-1")))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(4)
-            .mount(&server)
-            .await;
-
-        Mock::given(method("PUT"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let api = ProjectsApi::new(&server.uri(), "agent-1");
-        let result = check_next_step(&api, "task-1", None).await;
-        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1098,71 +1070,6 @@ mod tests {
         let api = ProjectsApi::new(&server.uri(), "agent-1");
         let result = check_next_step(&api, "task-1", None).await;
         assert_eq!(result.unwrap(), StepOutcome::Continue);
-    }
-
-    #[tokio::test]
-    async fn ready_at_review_step_get_playbook_fails_no_regression() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(task_json("ready", 1, "pb-1")))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(4)
-            .mount(&server)
-            .await;
-
-        Mock::given(method("PUT"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let api = ProjectsApi::new(&server.uri(), "agent-1");
-        let result = check_next_step(&api, "task-1", None).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn check_next_step_get_playbook_retries_transient_500() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(task_json("ready", 1, "pb-1")))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(standard_playbook()))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(500))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-
-        Mock::given(method("PUT"))
-            .and(path("/tasks/task-1"))
-            .and(body_json(serde_json::json!({"playbook_step": 0})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let api = ProjectsApi::new(&server.uri(), "agent-1");
-        let result = check_next_step(&api, "task-1", None).await;
-        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -1539,105 +1446,68 @@ mod tests {
         );
     }
 
-    // ── resolve_step tests with step_template_id ──
+    // ── resolve_step / step_name_from_state ──
+    //
+    // Note: the previous `resolve_step_*` and `check_next_step_*_resolved_steps_*`
+    // tests asserted behaviour from the pre-repo-playbook API path
+    // (HTTP `GET /playbooks/{id}`, `resolved_steps` preference) which
+    // was removed in 96782d4. They are replaced below with smaller
+    // tests that exercise the current repo-YAML path and the
+    // `step_name_from_state` fallback added so non-implement steps
+    // are still classified correctly when no `git_root` is available.
+
+    fn write_playbook(repo_root: &std::path::Path, name: &str, yaml: &str) {
+        std::fs::create_dir_all(repo_root.join(".diraigent/playbooks")).unwrap();
+        std::fs::write(
+            repo_root.join(format!(".diraigent/playbooks/{name}.yaml")),
+            yaml,
+        )
+        .unwrap();
+    }
 
     #[tokio::test]
-    async fn resolve_step_uses_resolved_steps_when_present() {
+    async fn resolve_step_returns_named_step_from_repo_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_playbook(
+            tmp.path(),
+            "standard",
+            "title: Standard\nsteps:\n  - name: implement\n    budget: 12.0\n    model: opus\n  - name: review\n",
+        );
+
         let server = MockServer::start().await;
-
-        // Playbook response includes resolved_steps (API expanded templates)
-        let playbook_with_resolved = serde_json::json!({
-            "id": "pb-1",
-            "steps": [
-                {"name": "impl-stub", "step_template_id": "tmpl-1", "step": 0},
-                {"name": "review", "step": 1}
-            ],
-            "resolved_steps": [
-                {"name": "implement", "model": "opus", "budget": 12.0, "step_template_id": "tmpl-1", "step": 0},
-                {"name": "review", "step": 1}
-            ]
-        });
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playbook_with_resolved))
-            .mount(&server)
-            .await;
-
         let api = test_api(&server.uri());
         let task = serde_json::json!({
             "id": "task-1",
-            "playbook_id": "pb-1",
-            "playbook_step": 0
+            "state": "implement",
+            "playbook_name": "standard",
+            "playbook_step": 0,
         });
 
-        let (name, step_json) = resolve_step(&api, Some(&task), None).await;
+        let (name, step_json) = resolve_step(&api, Some(&task), Some(tmp.path())).await;
         assert_eq!(name, "implement");
         let step = step_json.unwrap();
-        assert_eq!(step["model"].as_str(), Some("opus"));
         assert_eq!(step["budget"].as_f64(), Some(12.0));
+        assert_eq!(step["model"].as_str(), Some("opus"));
     }
 
     #[tokio::test]
-    async fn resolve_step_falls_back_to_raw_steps_without_resolved() {
+    async fn resolve_step_template_merge_via_api() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_playbook(
+            tmp.path(),
+            "tmpl",
+            "title: Tmpl\nsteps:\n  - name: my-impl\n    step_template_id: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n    budget: 20.0\n",
+        );
+
         let server = MockServer::start().await;
-
-        // Playbook response has no resolved_steps — only raw steps
-        let playbook = serde_json::json!({
-            "id": "pb-1",
-            "steps": [
-                {"name": "implement", "budget": 5.0, "step": 0},
-                {"name": "review", "step": 1}
-            ]
-        });
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playbook))
-            .mount(&server)
-            .await;
-
-        let api = test_api(&server.uri());
-        let task = serde_json::json!({
-            "id": "task-1",
-            "playbook_id": "pb-1",
-            "playbook_step": 0
-        });
-
-        let (name, step_json) = resolve_step(&api, Some(&task), None).await;
-        assert_eq!(name, "implement");
-        let step = step_json.unwrap();
-        assert_eq!(step["budget"].as_f64(), Some(5.0));
-    }
-
-    #[tokio::test]
-    async fn resolve_step_client_side_template_resolution() {
-        let server = MockServer::start().await;
-
-        // Playbook has step_template_id but no resolved_steps (old API)
-        let playbook = serde_json::json!({
-            "id": "pb-1",
-            "steps": [
-                {"name": "my-impl", "step_template_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "budget": 20.0, "step": 0}
-            ]
-        });
-
-        // Template response — provides defaults
         let template = serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "implement",
             "model": "opus",
             "budget": 12.0,
             "allowed_tools": "full",
-            "description": "Default implement step"
+            "description": "Default implement step",
         });
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playbook))
-            .mount(&server)
-            .await;
-
         Mock::given(method("GET"))
             .and(path("/step-templates/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
             .respond_with(ResponseTemplate::new(200).set_body_json(template))
@@ -1647,41 +1517,31 @@ mod tests {
         let api = test_api(&server.uri());
         let task = serde_json::json!({
             "id": "task-1",
-            "playbook_id": "pb-1",
-            "playbook_step": 0
+            "state": "implement",
+            "playbook_name": "tmpl",
+            "playbook_step": 0,
         });
 
-        let (name, step_json) = resolve_step(&api, Some(&task), None).await;
-        // Inline "name" overrides template "name"
+        let (name, step_json) = resolve_step(&api, Some(&task), Some(tmp.path())).await;
+        // Inline name wins over template name.
         assert_eq!(name, "my-impl");
         let step = step_json.unwrap();
-        // Inline budget=20 overrides template budget=12
+        // Inline budget wins, template model + allowed_tools inherited.
         assert_eq!(step["budget"].as_f64(), Some(20.0));
-        // Template model=opus is inherited (not in inline)
         assert_eq!(step["model"].as_str(), Some("opus"));
-        // Template allowed_tools inherited
         assert_eq!(step["allowed_tools"].as_str(), Some("full"));
     }
 
     #[tokio::test]
-    async fn resolve_step_template_fetch_fails_falls_back_gracefully() {
+    async fn resolve_step_template_fetch_404_falls_back_to_inline() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_playbook(
+            tmp.path(),
+            "tmpl",
+            "title: Tmpl\nsteps:\n  - name: implement\n    step_template_id: bad-template-id\n    budget: 5.0\n",
+        );
+
         let server = MockServer::start().await;
-
-        // Playbook has step_template_id but no resolved_steps
-        let playbook = serde_json::json!({
-            "id": "pb-1",
-            "steps": [
-                {"name": "implement", "step_template_id": "bad-template-id", "budget": 5.0, "step": 0}
-            ]
-        });
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playbook))
-            .mount(&server)
-            .await;
-
-        // Template fetch returns 404
         Mock::given(method("GET"))
             .and(path("/step-templates/bad-template-id"))
             .respond_with(ResponseTemplate::new(404))
@@ -1691,88 +1551,85 @@ mod tests {
         let api = test_api(&server.uri());
         let task = serde_json::json!({
             "id": "task-1",
-            "playbook_id": "pb-1",
-            "playbook_step": 0
+            "state": "implement",
+            "playbook_name": "tmpl",
+            "playbook_step": 0,
         });
 
-        let (name, step_json) = resolve_step(&api, Some(&task), None).await;
-        // Falls back to inline properties
+        let (name, step_json) = resolve_step(&api, Some(&task), Some(tmp.path())).await;
         assert_eq!(name, "implement");
         let step = step_json.unwrap();
         assert_eq!(step["budget"].as_f64(), Some(5.0));
     }
 
     #[tokio::test]
-    async fn resolve_step_no_template_id_unchanged() {
+    async fn resolve_step_no_git_root_uses_task_state_fallback() {
         let server = MockServer::start().await;
-
-        let playbook = serde_json::json!({
-            "id": "pb-1",
-            "steps": [
-                {"name": "implement", "budget": 12.0, "model": "opus", "step": 0}
-            ]
-        });
-
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playbook))
-            .mount(&server)
-            .await;
-
         let api = test_api(&server.uri());
         let task = serde_json::json!({
             "id": "task-1",
-            "playbook_id": "pb-1",
-            "playbook_step": 0
+            "state": "review",
+            "playbook_name": "standard",
+            "playbook_step": 1,
         });
 
         let (name, step_json) = resolve_step(&api, Some(&task), None).await;
-        assert_eq!(name, "implement");
-        let step = step_json.unwrap();
-        assert_eq!(step["budget"].as_f64(), Some(12.0));
-        assert_eq!(step["model"].as_str(), Some("opus"));
+        // Falls back to task.state when no git_root is available so
+        // step-profile classification still produces the right answer.
+        assert_eq!(name, "review");
+        assert!(step_json.is_none());
     }
 
     #[tokio::test]
-    async fn check_next_step_uses_resolved_steps_for_regression() {
-        let server = MockServer::start().await;
+    async fn resolve_step_repo_playbook_missing_falls_back_to_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No YAML file written -> find_playbook_by_name returns None.
 
-        // Playbook with resolved_steps — step 0 is retriable (implement)
-        let playbook = serde_json::json!({
-            "id": "pb-1",
-            "steps": [
-                {"name": "impl-stub", "step_template_id": "tmpl-1", "step": 0},
-                {"name": "review", "step": 1}
-            ],
-            "resolved_steps": [
-                {"name": "implement", "step_template_id": "tmpl-1", "step": 0},
-                {"name": "review", "step": 1}
-            ]
+        let server = MockServer::start().await;
+        let api = test_api(&server.uri());
+        let task = serde_json::json!({
+            "id": "task-1",
+            "state": "merge",
+            "playbook_name": "nonexistent",
+            "playbook_step": 2,
         });
 
-        Mock::given(method("GET"))
-            .and(path("/tasks/task-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(task_json("ready", 1, "pb-1")))
-            .mount(&server)
-            .await;
+        let (name, step_json) = resolve_step(&api, Some(&task), Some(tmp.path())).await;
+        assert_eq!(name, "merge");
+        assert!(step_json.is_none());
+    }
 
-        Mock::given(method("GET"))
-            .and(path("/playbooks/pb-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playbook))
-            .mount(&server)
-            .await;
+    #[test]
+    fn step_name_from_state_lifecycle_states_return_implement() {
+        for lifecycle in [
+            "",
+            "ready",
+            "backlog",
+            "done",
+            "cancelled",
+            "human_review",
+            "ai_review",
+            "wait:review",
+            "wait:merge",
+        ] {
+            assert_eq!(
+                step_name_from_state(lifecycle),
+                "implement",
+                "lifecycle state {lifecycle:?} should fall back to 'implement'"
+            );
+        }
+    }
 
-        // Expect regression to step 0 (implement)
-        Mock::given(method("PUT"))
-            .and(path("/tasks/task-1"))
-            .and(body_json(serde_json::json!({"playbook_step": 0})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-            .expect(1)
-            .mount(&server)
-            .await;
+    #[test]
+    fn step_name_from_state_step_states_pass_through() {
+        for step in ["implement", "review", "merge", "dream", "review-arch"] {
+            assert_eq!(step_name_from_state(step), step);
+        }
+    }
 
-        let api = test_api(&server.uri());
-        let result = check_next_step(&api, "task-1", None).await;
-        assert!(result.is_ok());
+    #[test]
+    fn step_name_from_state_trims_whitespace() {
+        assert_eq!(step_name_from_state("  review  "), "review");
+        assert_eq!(step_name_from_state("\tready\n"), "implement");
     }
 }
