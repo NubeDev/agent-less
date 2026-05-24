@@ -4,6 +4,7 @@ mod harness;
 mod authz;
 mod encryption;
 mod forgejo_webhooks;
+mod memberships;
 mod observations;
 mod packages;
 mod playbook;

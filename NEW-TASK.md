@@ -332,8 +332,8 @@ git worktree prune
 
 | Symptom | Likely cause |
 |---|---|
-| `POST /v1/projects` returns 404 | Use `POST /v1` (no `/projects` suffix). |
-| `POST /v1/members` returns 500 | API needs the `ON CONFLICT (tenant_id, agent_id, role_id)` fix in `apps/api/src/repository/memberships.rs`. |
+| `POST /v1/projects` returns 404 | Old API build — both `POST /v1` (legacy) and `POST /v1/projects` (canonical, since SCOPE.md debt #2) work on current API. |
+| `POST /v1/members` returns 500 | Stale note: fixed by migration 042 (`membership_tenant_agent_role_key` UNIQUE) which matches the repo's `ON CONFLICT (tenant_id, agent_id, role_id)`. Pinned by `create_membership_upserts_on_duplicate` integration test. |
 | Task stays in `ready`, no orchestra activity | `AGENT_ID` env doesn't match the agent that has membership; or `DIRAIGENT_API_TOKEN` doesn't match the agent's `api_key`. |
 | Orchestra picks task, claude exits with code 1 in ~2 s, log file ~193 B | Old PTY/`script(1)` wrapper hit a TTY issue. Rebuild orchestra — the current `claude_code.rs` spawns `claude` directly without `script`. |
 | `git fetch origin failed: 'origin' does not appear to be a git repository` | Cosmetic for local-only repos. Orchestra falls back to local state. |

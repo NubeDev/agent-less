@@ -389,8 +389,11 @@ SoW-2.
    Both forms work; new code should target `/v1/projects/...`. Legacy
    routes can be removed once callers (web, orchestra, tui) migrate.
    Test: `projects_canonical_and_legacy_paths_both_work`.
-3. **`memberships.rs` `ON CONFLICT` 500 bug** flagged in
-   NEW-TASK.md troubleshooting. Verify still real; fix or remove the note.
+3. **`memberships.rs` `ON CONFLICT` 500 bug** ✅ Stale. Migration 042
+   (`membership_tenant_agent_role_key UNIQUE (tenant_id, agent_id,
+   role_id)`) matches the repo's `ON CONFLICT (tenant_id, agent_id,
+   role_id) DO UPDATE`. Pinned by `create_membership_upserts_on_duplicate`
+   integration test; NEW-TASK.md troubleshooting note updated.
 4. **Stale state-machine vocabulary** (`draft`/`in_progress`/`blocked`)
    probably still lingers in comments, UI strings, or older migrations.
    20-min `grep -ri 'in_progress\|draft' apps/` audit + sweep.
