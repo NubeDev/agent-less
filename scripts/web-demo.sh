@@ -273,28 +273,149 @@ case "$HTTP" in
   *)           die "membership create returned HTTP $HTTP" ;;
 esac
 
-# ── 8) Task ──────────────────────────────────────────────────────
-echo "==> creating task"
-TASK=$(curl -sf -X POST "$API/$PROJ/tasks" "${H_DEV[@]}" -d '{
-  "title":"Build a tiny Rust web server serving a static home page",
-  "kind":"feature",
-  "playbook_id":"web-with-qa",
-  "context":{
-    "spec":"Build a minimal Rust HTTP server that serves the existing static/index.html file at GET /. Pick a small framework (axum or actix-web — ask). Pick a bind port (ask). Pin minimal deps. The crate is already named web-demo in Cargo.toml.",
-    "files":["Cargo.toml","src/main.rs","static/index.html"],
-    "test_cmd":"cargo build --manifest-path Cargo.toml",
-    "acceptance_criteria":[
+# ── 8) Seed References (Knowledge + Decisions + Observations) ────
+# Populates /knowledge, /decisions, /observations so the UI surfaces
+# have visible content before the orchestra runs. The agent's context
+# assembler will surface these to every step (semantically ranked).
+#
+# JSON bodies live in tmp files so we never have to escape quotes
+# inside bash heredocs. Each post echoes HTTP code on stderr so
+# failures are visible (no silent --fail).
+echo "==> seeding references"
+JSON_DIR=$(mktemp -d)
+trap 'rm -rf "$JSON_DIR"' EXIT
+
+post_json() {
+  local path="$1" file="$2" label="$3"
+  local code
+  code=$(curl -s -o /tmp/web-demo-resp -w '%{http_code}' \
+    -X POST "$API/$PROJ/$path" "${H_DEV[@]}" --data-binary "@$file")
+  if [[ "$code" == 2* ]]; then
+    echo "    $label: ok"
+  else
+    echo "    $label: HTTP $code"
+    cat /tmp/web-demo-resp >&2 || true
+    echo >&2
+  fi
+}
+
+cat > "$JSON_DIR/k1.json" <<'JSON'
+{
+  "title": "Rust style: format + clippy gate",
+  "category": "convention",
+  "content": "Always run cargo fmt --all and cargo clippy --all-targets -- -D warnings before any commit. CI fails on warnings.",
+  "tags": ["rust", "style", "ci"]
+}
+JSON
+cat > "$JSON_DIR/k2.json" <<'JSON'
+{
+  "title": "Project layout: src/main.rs + static/",
+  "category": "architecture",
+  "content": "This crate ships a single binary. Source lives in src/main.rs. Static web assets live under static/ and are served as-is by the HTTP server. No build pipeline beyond cargo build.",
+  "tags": ["layout", "architecture"]
+}
+JSON
+cat > "$JSON_DIR/k3.json" <<'JSON'
+{
+  "title": "Anti-pattern: unwrap in request handlers",
+  "category": "anti_pattern",
+  "content": "Request handlers must not call .unwrap() or .expect() on Result/Option that depend on client input — those become DoS vectors. Use ? with a typed error or return an explicit HTTP error.",
+  "tags": ["security", "rust"]
+}
+JSON
+post_json knowledge "$JSON_DIR/k1.json" "knowledge[rust-style]"
+post_json knowledge "$JSON_DIR/k2.json" "knowledge[project-layout]"
+post_json knowledge "$JSON_DIR/k3.json" "knowledge[security]"
+
+cat > "$JSON_DIR/d1.json" <<'JSON'
+{
+  "title": "HTTP framework will be picked at plan time via QA",
+  "context": "Two viable minimal frameworks exist for the web-demo crate: axum (Tokio-native, used elsewhere in the workspace) and actix-web (mature, slightly heavier). We do not pre-commit; the plan step asks the AI responder, which picks based on workspace conventions.",
+  "rationale": "Demonstrates the AI-resolve QA loop without us hard-coding the answer. The decision is recorded here so future tasks see the chosen framework and the reasoning trail.",
+  "alternatives": [
+    {"name": "axum", "pros": "matches existing apps/api stack", "cons": "none for this scope"},
+    {"name": "actix-web", "pros": "mature ecosystem", "cons": "new dependency surface for the workspace"}
+  ],
+  "consequences": "Once the QA resolves, the chosen framework becomes the pinned dependency in Cargo.toml. Subsequent edits stay on the same framework.",
+  "tags": ["framework", "web"]
+}
+JSON
+post_json decisions "$JSON_DIR/d1.json" "decision[framework-choice]"
+
+cat > "$JSON_DIR/o1.json" <<'JSON'
+{
+  "kind": "insight",
+  "title": "Crate already named web-demo — no rename needed",
+  "description": "Cargo.toml in the repo root sets name = \"web-demo\". The implement step should NOT change the crate name.",
+  "severity": "info"
+}
+JSON
+cat > "$JSON_DIR/o2.json" <<'JSON'
+{
+  "kind": "risk",
+  "title": "Serve static/ as files, do not embed",
+  "description": "Use the framework's static-file serving rather than include_str!/embedding, so the page can be edited without recompiling.",
+  "severity": "low"
+}
+JSON
+post_json observations "$JSON_DIR/o1.json" "observation[insight]"
+post_json observations "$JSON_DIR/o2.json" "observation[risk]"
+
+# ── 9) Task — every context field exercised ──────────────────────
+echo "==> creating task (kitchen-sink context)"
+cat > "$JSON_DIR/task.json" <<'JSON'
+{
+  "title": "Build a tiny Rust web server serving a static home page",
+  "kind": "feature",
+  "playbook_id": "web-with-qa",
+  "context": {
+    "spec": "Build a minimal Rust HTTP server that serves the existing static/index.html file at GET /. Pick a small framework (axum or actix-web — ask the QA system, do NOT guess). Pick a bind port (ask — a human will answer). Pin minimal deps. The crate is already named web-demo in Cargo.toml; do NOT rename it.",
+    "files": ["Cargo.toml", "src/main.rs", "static/index.html"],
+    "test_cmd": "cargo build --manifest-path Cargo.toml",
+    "acceptance_criteria": [
       "cargo build succeeds",
       "src/main.rs starts an HTTP server on the chosen port",
       "GET / returns the bytes of static/index.html with Content-Type text/html"
     ],
-    "reports":["diff_summary","cost_breakdown","qa_log","handover_chain"]
+    "session_mode": "shared",
+    "preserve_worktree": true,
+    "verifications": {
+      "extra_test_cmd": "cargo build --manifest-path Cargo.toml 2>&1 | tail -20",
+      "fail_fast": true
+    },
+    "reports": ["diff_summary", "cost_breakdown", "qa_log", "handover_chain", "knowledge_touched"],
+    "integrations_allowed": []
   }
-}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+}
+JSON
+TASK_RESP=$(mktemp)
+TASK_CODE=$(curl -s -o "$TASK_RESP" -w '%{http_code}' \
+  -X POST "$API/$PROJ/tasks" "${H_DEV[@]}" --data-binary "@$JSON_DIR/task.json")
+[[ "$TASK_CODE" == 2* ]] || { echo "task create HTTP $TASK_CODE:" >&2; cat "$TASK_RESP" >&2; exit 1; }
+TASK=$(python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])' < "$TASK_RESP")
+rm -f "$TASK_RESP"
 
 curl -sf -X POST "$API/tasks/$TASK/transition" "${H_DEV[@]}" \
   -d '{"state":"ready"}' >/dev/null
 echo "    task:    $TASK (ready)"
+echo
+echo "    context fields exercised on this task:"
+echo "      • spec, files, test_cmd, acceptance_criteria   (always)"
+echo "      • playbook_id=web-with-qa                       (ai + human QA steps)"
+echo "      • session_mode=shared                           (ADR 0001 — Claude session reused across steps)"
+echo "      • preserve_worktree=true                        (worktree kept after merge)"
+echo "      • verifications.extra_test_cmd + fail_fast      (ADR 0002 — gate merge on cargo build)"
+echo "      • reports=[diff_summary, cost_breakdown, qa_log,"
+echo "                 handover_chain, knowledge_touched]   (auto-Reports on AllDone)"
+echo
+echo "    context fields exercised on this task:"
+echo "      • spec, files, test_cmd, acceptance_criteria   (always)"
+echo "      • playbook_id=web-with-qa                       (ai + human QA steps)"
+echo "      • session_mode=shared                           (ADR 0001 — Claude session reused across steps)"
+echo "      • preserve_worktree=true                        (worktree kept after merge)"
+echo "      • verifications.extra_test_cmd + fail_fast      (ADR 0002 — gate merge on cargo build)"
+echo "      • reports=[diff_summary, cost_breakdown, qa_log,"
+echo "                 handover_chain, knowledge_touched]   (auto-Reports on AllDone)"
 
 # ── 9) Persist state ─────────────────────────────────────────────
 cat > "$PROJECTS_BASE/state.env" <<EOF
