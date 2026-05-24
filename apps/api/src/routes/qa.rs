@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/qa/{id}/answer", post(answer))
         .route("/v1/qa/sweep-expired", post(sweep_expired))
         .route("/v1/qa/sweep-clean", post(sweep_clean))
+        .route("/v1/qa/metrics", get(metrics))
 }
 
 async fn create(
@@ -362,4 +363,35 @@ async fn sweep_clean(
     let days = params.min_age_days.unwrap_or(7).clamp(0, 365);
     let updated = crate::repository::sweep_clean_qa_outcome(&state.pool, days).await?;
     Ok(Json(SweepCleanResponse { updated }))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct MetricsParams {
+    /// Optional project scope; when omitted, metrics span every project
+    /// the caller can read.
+    project_id: Option<Uuid>,
+    /// Rolling window in days. Defaults to 30, clamped to [1, 365].
+    window_days: Option<i32>,
+}
+
+/// SoW gap #11: QA velocity & quality dashboard query. Returns counts,
+/// p50/p95 answer latencies (human vs AI), and accept / escalation /
+/// expiration rates over a rolling window.
+///
+/// Project-scope authz: when `project_id` is set, require read access
+/// on that project. When omitted, the endpoint requires no project
+/// scope (returns global metrics over rows the DB exposes — same model
+/// as `list_pending` without a `project_id` filter).
+async fn metrics(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Query(params): Query<MetricsParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if let Some(pid) = params.project_id {
+        require_membership(state.db.as_ref(), agent_id, user_id, pid).await?;
+    }
+    let days = params.window_days.unwrap_or(30).clamp(1, 365);
+    let v = crate::repository::qa_velocity_metrics(&state.pool, params.project_id, days).await?;
+    Ok(Json(v))
 }

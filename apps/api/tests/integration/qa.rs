@@ -598,3 +598,104 @@ async fn qa_cancelled_task_cascades_pending_to_resolved() {
 
     app.cleanup().await;
 }
+
+/// SoW gap #11: /v1/qa/metrics returns aggregates over the configured
+/// window. Verifies counters, timing percentiles, and ratios all line
+/// up with the rows the test inserts directly.
+#[tokio::test]
+async fn qa_metrics_aggregates_velocity_and_outcomes() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-metrics").await;
+    let task = app.create_task(project_id, "metrics seed").await;
+    let task_uuid: uuid::Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+    // 3 resolved human QAs with synthetic latencies 10s / 30s / 90s,
+    // outcomes clean / clean / reverted.
+    let seeds: &[(i64, &str)] = &[
+        (10, "resolved_clean"),
+        (30, "resolved_clean"),
+        (90, "resolved_reverted"),
+    ];
+    for (secs, outcome) in seeds {
+        sqlx::query(
+            "INSERT INTO diraigent.task_qa_item
+                 (task_id, project_id, step_name, kind, prompt, responder,
+                  status, answer, answered_at, resolved_at, outcome,
+                  created_at)
+             VALUES ($1, $2, 'implement', 'question', 'q?', 'human',
+                     'resolved', 'a', now(), now(), $3,
+                     now() - make_interval(secs => $4))",
+        )
+        .bind(task_uuid)
+        .bind(project_id)
+        .bind(*outcome)
+        .bind(*secs as f64)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+
+    // 1 escalated, 1 expired, 1 pending — for ratio denominators.
+    for status in &["escalated", "expired", "pending"] {
+        sqlx::query(
+            "INSERT INTO diraigent.task_qa_item
+                 (task_id, project_id, step_name, kind, prompt, responder, status)
+             VALUES ($1, $2, 'implement', 'question', 'q?', 'ai', $3)",
+        )
+        .bind(task_uuid)
+        .bind(project_id)
+        .bind(*status)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+
+    let r = app
+        .send(get(&format!(
+            "/v1/qa/metrics?project_id={project_id}&window_days=30"
+        )))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "metrics: {}", r.json);
+    let m = &r.json;
+
+    assert_eq!(m["window_days"], 30);
+    assert_eq!(m["total"], 6);
+
+    // by_status: {resolved: 3, escalated: 1, expired: 1, pending: 1}
+    assert_eq!(m["by_status"]["resolved"], 3);
+    assert_eq!(m["by_status"]["escalated"], 1);
+    assert_eq!(m["by_status"]["expired"], 1);
+    assert_eq!(m["by_status"]["pending"], 1);
+
+    // by_responder: 3 human, 3 ai
+    assert_eq!(m["by_responder"]["human"], 3);
+    assert_eq!(m["by_responder"]["ai"], 3);
+
+    // by_outcome: 2 clean, 1 reverted, 3 unknown (the ai rows)
+    assert_eq!(m["by_outcome"]["resolved_clean"], 2);
+    assert_eq!(m["by_outcome"]["resolved_reverted"], 1);
+    assert_eq!(m["by_outcome"]["unknown"], 3);
+
+    // Human latency: count 3, p50 ≈ 30s, p95 ≈ 90s, avg ≈ 43.33s.
+    let h = &m["human_answer_seconds"];
+    assert_eq!(h["count"], 3);
+    let p50 = h["p50"].as_f64().unwrap();
+    assert!((25.0..=35.0).contains(&p50), "p50={p50}");
+    let p95 = h["p95"].as_f64().unwrap();
+    assert!((80.0..=95.0).contains(&p95), "p95={p95}");
+
+    // AI latency: 0 resolved → count 0.
+    assert_eq!(m["ai_answer_seconds"]["count"], 0);
+
+    // Accept rate: clean / (clean + reverted + followup) = 2/3.
+    let accept = m["accept_rate"].as_f64().unwrap();
+    assert!((accept - 2.0 / 3.0).abs() < 1e-6, "accept_rate={accept}");
+
+    // Escalation rate: 1/6, expiration rate: 1/6.
+    let esc = m["escalation_rate"].as_f64().unwrap();
+    let exp = m["expiration_rate"].as_f64().unwrap();
+    assert!((esc - 1.0 / 6.0).abs() < 1e-6, "esc={esc}");
+    assert!((exp - 1.0 / 6.0).abs() < 1e-6, "exp={exp}");
+
+    app.cleanup().await;
+}

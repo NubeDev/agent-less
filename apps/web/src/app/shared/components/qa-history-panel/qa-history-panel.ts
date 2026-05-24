@@ -90,10 +90,10 @@ import type { SpQaItem } from '../../../core/services/qa-api.service';
                     conf={{ conf.toFixed(2) }}
                   </span>
                 }
-                @let acceptMode = acceptMode(qa);
-                @if (acceptMode) {
+                @let mode = acceptMode(qa);
+                @if (mode) {
                   <span class="px-1.5 py-0.5 rounded bg-ctp-blue/15 text-ctp-blue text-[10px]">
-                    {{ acceptMode }}
+                    {{ mode }}
                   </span>
                 }
                 @if (qa.outcome && qa.outcome !== 'unknown') {

@@ -52,6 +52,7 @@ const KINDS: ReportKind[] = ['security', 'component', 'architecture', 'performan
         </select>
         <select
           [(ngModel)]="selectedKind"
+          (ngModelChange)="loadItems()"
           class="bg-surface text-text-primary text-sm rounded-lg px-3 py-2 border border-border
                  focus:outline-none focus:ring-1 focus:ring-accent">
           <option value="">All kinds</option>
@@ -62,11 +63,12 @@ const KINDS: ReportKind[] = ['security', 'component', 'architecture', 'performan
         <input
           type="text"
           [(ngModel)]="taskFilter"
+          (ngModelChange)="onTaskFilterChange()"
           placeholder="task id"
           class="bg-surface text-text-primary text-sm rounded-lg px-3 py-2 border border-border
                  focus:outline-none focus:ring-1 focus:ring-accent w-44" />
         <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
-          <input type="checkbox" [(ngModel)]="taskRunOnly"
+          <input type="checkbox" [(ngModel)]="taskRunOnly" (ngModelChange)="loadItems()"
             class="rounded border-border bg-surface text-accent focus:ring-1 focus:ring-accent" />
           task-run reports only
         </label>
@@ -239,6 +241,13 @@ export class ReportsPage extends CrudFeatureBase<SpReport> {
   taskFilter = '';
   taskRunOnly = false;
 
+  private taskFilterDebounce: ReturnType<typeof setTimeout> | null = null;
+
+  onTaskFilterChange(): void {
+    if (this.taskFilterDebounce) clearTimeout(this.taskFilterDebounce);
+    this.taskFilterDebounce = setTimeout(() => this.loadItems(), 300);
+  }
+
   formTitle = '';
   formKind: ReportKind = 'custom';
   formPrompt = '';
@@ -321,7 +330,15 @@ export class ReportsPage extends CrudFeatureBase<SpReport> {
   override loadItems(): void {
     this.loading.set(true);
     const status = this.selectedStatus as ReportStatus | '';
-    this.api.list(status || undefined).subscribe({
+    const kind = this.selectedKind as ReportKind | '';
+    const tf = this.taskFilter.trim();
+    const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(tf);
+    this.api.list({
+      status: status || undefined,
+      kind: kind || undefined,
+      task_id: isUuid ? tf : undefined,
+      task_run_only: this.taskRunOnly || undefined,
+    }).subscribe({
       next: (items) => this.refreshAfterMutation(items),
       error: () => this.loading.set(false),
     });

@@ -40,11 +40,16 @@ export CORS_ORIGINS := http://localhost:$(WEB_PORT)
 .PHONY: db-up db-down db-logs db-psql
 
 db-up:
+	@if [ "$$(docker inspect -f '{{.State.Running}}' diraigent-pg 2>/dev/null)" = "true" ]; then \
+		echo "Postgres already running."; exit 0; \
+	fi
 	@docker rm -f diraigent-pg 2>/dev/null || true
+	docker volume create diraigent-pgdata 2>/dev/null || true
 	docker run -d --name diraigent-pg \
 		-e POSTGRES_USER=$(PG_USER) \
 		-e POSTGRES_PASSWORD=$(PG_PASS) \
 		-e POSTGRES_DB=$(PG_DB) \
+		-v diraigent-pgdata:/var/lib/postgresql/data \
 		-p $(PG_PORT):5432 \
 		postgres:18-alpine
 	@echo "Waiting for Postgres on port $(PG_PORT)..."
@@ -110,7 +115,7 @@ stop:
 	@-pkill -f "ng serve" 2>/dev/null || true
 	@-fuser -k $(WEB_PORT)/tcp 2>/dev/null || true
 	@-fuser -k $(API_PORT)/tcp 2>/dev/null || true
-	@-docker rm -f diraigent-pg 2>/dev/null || true
+	@-docker stop diraigent-pg 2>/dev/null || true
 	@echo "Stopped."
 
 restart: stop start

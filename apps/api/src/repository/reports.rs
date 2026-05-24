@@ -9,7 +9,9 @@ use super::{delete_by_id, fetch_by_id};
 
 const REPORT_FILTERS_WHERE: &str = "WHERE project_id = $1 \
     AND ($2::text IS NULL OR status = $2) \
-    AND ($3::text IS NULL OR kind = $3)";
+    AND ($3::text IS NULL OR kind = $3) \
+    AND ($4::uuid IS NULL OR task_id = $4) \
+    AND ($5::bool IS NULL OR ($5 = false) OR task_id IS NOT NULL)";
 
 pub async fn create_report(
     pool: &PgPool,
@@ -48,7 +50,11 @@ super::list_and_count!(
     REPORT_FILTERS_WHERE,
     |f| f.limit,
     |f| f.offset,
-    |q, f| q.bind(&f.status).bind(&f.kind)
+    |q, f| q
+        .bind(&f.status)
+        .bind(&f.kind)
+        .bind(f.task_id)
+        .bind(f.task_run_only)
 );
 
 pub async fn update_report(

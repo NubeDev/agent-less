@@ -238,3 +238,108 @@ pub async fn sweep_clean_qa_outcome(pool: &PgPool, min_age_days: i32) -> Result<
     .await?;
     Ok(res.rows_affected())
 }
+
+/// SoW gap #11: aggregate QA velocity & quality metrics over the last
+/// `window_days`, optionally scoped to a project. Single SQL roundtrip;
+/// returns a JSON blob the route serializes verbatim.
+///
+/// Counters: total + by_status + by_responder + by_kind + by_outcome.
+/// Timing: human and AI answer-latency seconds (avg / p50 / p95) over
+///         rows where `responder = x AND status = 'resolved' AND
+///         answered_at IS NOT NULL AND created_at IS NOT NULL`.
+/// Ratios: accept_rate    = clean / (clean + reverted + followup)
+///         escalation_rate = escalated / total
+///         expiration_rate = expired / total
+pub async fn qa_velocity_metrics(
+    pool: &PgPool,
+    project_id: Option<Uuid>,
+    window_days: i32,
+) -> Result<serde_json::Value, AppError> {
+    // Single CTE: scope rows once, then aggregate from the CTE.
+    // Using `extract(epoch from …)` for second-precision floats; the
+    // route can round in the UI if it cares.
+    let row: (serde_json::Value,) = sqlx::query_as(
+        r#"
+        WITH scoped AS (
+            SELECT *
+            FROM diraigent.task_qa_item
+            WHERE created_at >= now() - make_interval(days => $2)
+              AND ($1::uuid IS NULL OR project_id = $1)
+        ),
+        counts AS (
+            SELECT
+                count(*) AS total,
+                jsonb_object_agg(status,    cnt) FILTER (WHERE status    IS NOT NULL) AS by_status,
+                jsonb_object_agg(responder, cnt) FILTER (WHERE responder IS NOT NULL) AS by_responder,
+                jsonb_object_agg(kind,      cnt) FILTER (WHERE kind      IS NOT NULL) AS by_kind,
+                jsonb_object_agg(outcome,   cnt) FILTER (WHERE outcome   IS NOT NULL) AS by_outcome
+            FROM (
+                SELECT status, responder, kind, outcome, count(*) AS cnt
+                FROM scoped
+                GROUP BY GROUPING SETS ((status), (responder), (kind), (outcome))
+            ) g
+        ),
+        human_t AS (
+            SELECT
+                count(*)::bigint AS n,
+                avg(extract(epoch from (resolved_at - created_at)))                    AS avg_s,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch from (resolved_at - created_at))) AS p50_s,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch from (resolved_at - created_at))) AS p95_s
+            FROM scoped
+            WHERE responder = 'human' AND status = 'resolved'
+              AND resolved_at IS NOT NULL AND created_at IS NOT NULL
+        ),
+        ai_t AS (
+            SELECT
+                count(*)::bigint AS n,
+                avg(extract(epoch from (resolved_at - created_at)))                    AS avg_s,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch from (resolved_at - created_at))) AS p50_s,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch from (resolved_at - created_at))) AS p95_s
+            FROM scoped
+            WHERE responder = 'ai' AND status = 'resolved'
+              AND resolved_at IS NOT NULL AND created_at IS NOT NULL
+        ),
+        outcome_rates AS (
+            SELECT
+                sum(CASE WHEN outcome = 'resolved_clean'    THEN 1 ELSE 0 END)::float8 AS clean,
+                sum(CASE WHEN outcome = 'resolved_reverted' THEN 1 ELSE 0 END)::float8 AS reverted,
+                sum(CASE WHEN outcome = 'resolved_followup' THEN 1 ELSE 0 END)::float8 AS followup,
+                sum(CASE WHEN status  = 'escalated'         THEN 1 ELSE 0 END)::float8 AS escalated,
+                sum(CASE WHEN status  = 'expired'           THEN 1 ELSE 0 END)::float8 AS expired,
+                count(*)::float8 AS total
+            FROM scoped
+        )
+        SELECT jsonb_build_object(
+            'window_days',   $2::int,
+            'total',         coalesce(counts.total, 0),
+            'by_status',     coalesce(counts.by_status,    '{}'::jsonb),
+            'by_responder',  coalesce(counts.by_responder, '{}'::jsonb),
+            'by_kind',       coalesce(counts.by_kind,      '{}'::jsonb),
+            'by_outcome',    coalesce(counts.by_outcome,   '{}'::jsonb),
+            'human_answer_seconds', jsonb_build_object(
+                'count', coalesce(human_t.n, 0),
+                'avg',   human_t.avg_s,
+                'p50',   human_t.p50_s,
+                'p95',   human_t.p95_s
+            ),
+            'ai_answer_seconds', jsonb_build_object(
+                'count', coalesce(ai_t.n, 0),
+                'avg',   ai_t.avg_s,
+                'p50',   ai_t.p50_s,
+                'p95',   ai_t.p95_s
+            ),
+            'accept_rate',     CASE WHEN (outcome_rates.clean + outcome_rates.reverted + outcome_rates.followup) > 0
+                                    THEN outcome_rates.clean / (outcome_rates.clean + outcome_rates.reverted + outcome_rates.followup)
+                                    ELSE NULL END,
+            'escalation_rate', CASE WHEN outcome_rates.total > 0 THEN outcome_rates.escalated / outcome_rates.total ELSE NULL END,
+            'expiration_rate', CASE WHEN outcome_rates.total > 0 THEN outcome_rates.expired   / outcome_rates.total ELSE NULL END
+        )
+        FROM counts, human_t, ai_t, outcome_rates
+        "#,
+    )
+    .bind(project_id)
+    .bind(window_days)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}

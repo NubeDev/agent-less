@@ -7,6 +7,7 @@ import { DiraigentApiService, DgProject } from '../../core/services/diraigent-ap
 import {
   PlaybooksApiService,
   SpPlaybook,
+  SpPlaybookStep,
 } from '../../core/services/playbooks-api.service';
 import { CrudFeatureBase } from '../../shared/crud-feature-base';
 import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/confirm-dialog';

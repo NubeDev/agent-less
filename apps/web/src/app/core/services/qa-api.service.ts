@@ -28,6 +28,8 @@ export interface SpQaItem {
   created_at: string;
   answered_at: string | null;
   resolved_at: string | null;
+  /** `unknown` | `resolved_clean` | `resolved_reverted` | `resolved_followup`. */
+  outcome: string;
   metadata: Record<string, unknown>;
 }
 

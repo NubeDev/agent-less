@@ -1718,6 +1718,11 @@ pub struct UpdateReport {
 pub struct ReportFilters {
     pub status: Option<String>,
     pub kind: Option<String>,
+    /// Filter to a specific task's reports (UUID).
+    pub task_id: Option<Uuid>,
+    /// When true, keep only reports with a non-null `task_id`
+    /// (i.e. emitted by a task run rather than ad-hoc).
+    pub task_run_only: Option<bool>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }

@@ -38,10 +38,18 @@ export interface SpReportUpdate {
 export class ReportsApiService extends BaseCrudApiService<SpReport, SpReportCreate, SpReportUpdate> {
   protected readonly resource = 'reports';
 
-  list(status?: ReportStatus): Observable<SpReport[]> {
+  list(filters?: {
+    status?: ReportStatus;
+    kind?: ReportKind;
+    task_id?: string;
+    task_run_only?: boolean;
+  }): Observable<SpReport[]> {
     if (!this.projectId) return EMPTY;
     const params: Record<string, string> = {};
-    if (status) params['status'] = status;
+    if (filters?.status) params['status'] = filters.status;
+    if (filters?.kind) params['kind'] = filters.kind;
+    if (filters?.task_id) params['task_id'] = filters.task_id;
+    if (filters?.task_run_only) params['task_run_only'] = 'true';
     return this.http.get<PaginatedResponse<SpReport>>(
       `${this.baseUrl}/${this.projectId}/${this.resource}`, { params }
     ).pipe(map(res => res.data));
