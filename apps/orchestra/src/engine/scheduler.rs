@@ -11,6 +11,28 @@ use crate::git::strategy::GitAction;
 use crate::project::paths as project_paths;
 use crate::task_id::TaskId;
 
+/// UI-gap #6: extract `task.context.preserve_worktree` (boolean) from a
+/// loaded task JSON. Pure helper so the parsing rules are testable.
+/// Accepts both `true` and the string `"true"`/`"1"` for robustness, since
+/// the UI form may serialize from a checkbox into either shape.
+pub(crate) fn preserve_worktree_from_task(task: &serde_json::Value) -> bool {
+    let v = &task["context"]["preserve_worktree"];
+    v.as_bool().unwrap_or_else(|| match v.as_str() {
+        Some(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes"),
+        None => false,
+    })
+}
+
+/// Fetch the task and return whether the user requested that the worktree be
+/// preserved after the run completes. A failed fetch is treated as "do not
+/// preserve" so a transient API error never leaks worktrees indefinitely.
+async fn task_requests_preserve_worktree(api: &dyn TaskSource, task_id: &str) -> bool {
+    match api.get_task(task_id).await {
+        Ok(t) => preserve_worktree_from_task(&t),
+        Err(_) => false,
+    }
+}
+
 /// Collect finished tasks and process them (check pipeline state, merge/cleanup).
 /// Returns `true` if any file locks were released (triggers immediate re-poll for queued tasks).
 pub async fn reap_finished(
@@ -140,7 +162,13 @@ async fn process_reaped_task(
                                 deletions,
                             )
                             .await;
-                            wm.remove_worktree(&task_id);
+                            if task_requests_preserve_worktree(api, &task_id).await {
+                                info!(
+                                    "mid-pipeline merge for {tid} succeeded; preserve_worktree=true — keeping worktree"
+                                );
+                            } else {
+                                wm.remove_worktree(&task_id);
+                            }
                         }
                         Err(e) => {
                             error!("mid-pipeline merge failed for {tid}: {e} — keeping branch");
@@ -226,7 +254,13 @@ async fn process_reaped_task(
                             deletions,
                         )
                         .await;
-                        wm.remove_worktree(&task_id);
+                        if task_requests_preserve_worktree(api, &task_id).await {
+                            info!(
+                                "task {tid} merge succeeded; preserve_worktree=true — keeping worktree"
+                            );
+                        } else {
+                            wm.remove_worktree(&task_id);
+                        }
                     }
                     Err(e) => {
                         error!(
@@ -278,6 +312,10 @@ async fn process_reaped_task(
                         }
                     }
                 }
+            } else if task_requests_preserve_worktree(api, &task_id).await {
+                info!(
+                    "task {tid} done (no-merge strategy); preserve_worktree=true — keeping worktree"
+                );
             } else {
                 wm.remove_worktree(&task_id);
             }
@@ -287,18 +325,20 @@ async fn process_reaped_task(
         }
         StepOutcome::Cancelled { project_id } => {
             release_lock_project_id = Some(project_id.clone());
-            info!("task {tid} cancelled — removing worktree (no merge)");
-            if let Ok(wm) = project_paths::create_project_wm(api, &project_id, projects_path).await
-            {
-                wm.remove_worktree(&task_id);
-            }
-            if let Err(e) = api
-                .post_comment(
-                    &task_id,
-                    "Task cancelled. Worktree cleaned up — no merge performed.",
-                )
-                .await
-            {
+            let preserve = task_requests_preserve_worktree(api, &task_id).await;
+            let comment = if preserve {
+                info!("task {tid} cancelled; preserve_worktree=true — keeping worktree");
+                "Task cancelled. Worktree preserved (preserve_worktree=true)."
+            } else {
+                info!("task {tid} cancelled — removing worktree (no merge)");
+                if let Ok(wm) =
+                    project_paths::create_project_wm(api, &project_id, projects_path).await
+                {
+                    wm.remove_worktree(&task_id);
+                }
+                "Task cancelled. Worktree cleaned up — no merge performed."
+            };
+            if let Err(e) = api.post_comment(&task_id, comment).await {
                 warn!("failed to post cancellation comment for {tid}: {e}");
             }
         }
@@ -430,6 +470,68 @@ mod tests {
 
     fn new_lock_queue() -> LockQueue {
         Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    // ── UI-gap #6: preserve_worktree extraction ─────────────────
+
+    #[test]
+    fn preserve_worktree_false_when_missing() {
+        let task = serde_json::json!({"context": {}});
+        assert!(!preserve_worktree_from_task(&task));
+    }
+
+    #[test]
+    fn preserve_worktree_false_when_no_context() {
+        let task = serde_json::json!({});
+        assert!(!preserve_worktree_from_task(&task));
+    }
+
+    #[test]
+    fn preserve_worktree_bool_true() {
+        let task = serde_json::json!({"context": {"preserve_worktree": true}});
+        assert!(preserve_worktree_from_task(&task));
+    }
+
+    #[test]
+    fn preserve_worktree_bool_false() {
+        let task = serde_json::json!({"context": {"preserve_worktree": false}});
+        assert!(!preserve_worktree_from_task(&task));
+    }
+
+    #[test]
+    fn preserve_worktree_string_true_variants() {
+        for s in ["true", "TRUE", " True ", "1", "yes", "YES"] {
+            let task = serde_json::json!({"context": {"preserve_worktree": s}});
+            assert!(
+                preserve_worktree_from_task(&task),
+                "expected true for {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserve_worktree_string_falsey_variants() {
+        for s in ["false", "0", "no", "", "maybe"] {
+            let task = serde_json::json!({"context": {"preserve_worktree": s}});
+            assert!(
+                !preserve_worktree_from_task(&task),
+                "expected false for {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserve_worktree_rejects_unexpected_types() {
+        for v in [
+            serde_json::json!(1),
+            serde_json::json!(0),
+            serde_json::json!(null),
+            serde_json::json!([true]),
+            serde_json::json!({"on": true}),
+        ] {
+            let task = serde_json::json!({"context": {"preserve_worktree": v}});
+            assert!(!preserve_worktree_from_task(&task));
+        }
     }
 
     /// Mount a project mock that returns git_mode="none" so create_project_wm

@@ -374,9 +374,10 @@ panels show "no data yet").
    carry `source_url` — that requires a separate analyzer/seed
    migration if we want it on the defaults.
 
-6. **Advanced-task overrides round-trip** — ⚠️ in progress: 5 of 12
+6. **Advanced-task overrides round-trip** — ⚠️ in progress: 6 of 12
    fields shipped (`env`, `mcp`, `qa_override`, `model_override`,
-   `budget_usd_cap`); the other 7 are still ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
+   `budget_usd_cap`, `preserve_worktree`); the other 6 are still
+   ignored by the runtime. UI-4 persists `qa_override`, `session_mode`,
    `preserve_worktree`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
    `verifications.{ids,fail_fast,extra_test_cmd}`, `reports`,
    `integrations_allowed`, `model_override`, `budget_usd_cap`, `env`,
@@ -406,6 +407,17 @@ panels show "no data yet").
      (task can only lower the budget, never raise it). 8 unit
      tests in `engine::spawner::tests` cover precedence + edge
      cases (zero, negative, NaN, infinity, non-numeric).
+   - `preserve_worktree` → `preserve_worktree_from_task` in
+     [engine/scheduler.rs](apps/orchestra/src/engine/scheduler.rs)
+     reads `context.preserve_worktree` (boolean, or stringy
+     `true`/`1`/`yes`). Every `wm.remove_worktree()` cleanup call
+     site in `process_reaped_task` (mid-pipeline merge success,
+     all-done merge success, no-merge done, cancelled) now skips
+     the cleanup when the flag is set; the cancelled-task comment
+     also flips to mention preservation. Fetch failure defaults
+     to "do not preserve" so a transient API error never leaks
+     worktrees indefinitely. 7 unit tests cover the parsing edge
+     cases.
 
    All five reuse a single `api.get_task()` call up front; malformed
    values degrade silently so the advanced UI can never block worker
@@ -422,9 +434,8 @@ panels show "no data yet").
    Each remaining field is a discrete worker change; until those land,
    the advanced UI must NOT be shipped as "supported" for them — it
    stores intent that the runtime silently discards. Remaining:
-   `session_mode`, `preserve_worktree`, `knowledge.pin_ids`,
-   `knowledge.exclude_tags`, `verifications.*`, `reports`,
-   `integrations_allowed`.
+   `session_mode`, `knowledge.pin_ids`, `knowledge.exclude_tags`,
+   `verifications.*`, `reports`, `integrations_allowed`.
 
 ---
 
