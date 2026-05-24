@@ -37,3 +37,4 @@ docs/*.html
 
 secrets
 .orchestra.pid
+logs/*
