@@ -14,6 +14,7 @@ mod claude_code;
 mod copilot;
 mod ollama;
 mod openai;
+pub mod sentinel;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
