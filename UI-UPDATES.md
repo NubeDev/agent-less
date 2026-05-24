@@ -291,7 +291,7 @@ everything UI-4 lets you configure.
 
 ### Exit
 - Every backend feature has a visible representation on this page. ✅
-  (Knowledge-touched panel waits on backend provenance.)
+  (Knowledge-touched panel now server-scoped via gap #1 + gap #4.)
 
 ---
 
