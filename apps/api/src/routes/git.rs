@@ -305,6 +305,18 @@ async fn revert_task(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to mark task as reverted: {e}")))?;
 
+    // SoW-4: stamp resolved QAs on this task as `resolved_reverted` so the
+    // accept-check tuning telemetry reflects the bad outcome.
+    if let Err(e) =
+        crate::repository::set_qa_outcome_for_task(&state.pool, task_id, "resolved_reverted").await
+    {
+        tracing::warn!(
+            task_id = %task_id,
+            error = %e,
+            "revert_task: failed to stamp resolved_reverted on QA items"
+        );
+    }
+
     let message = data["message"]
         .as_str()
         .unwrap_or("Revert completed")

@@ -245,6 +245,18 @@ async fn main() -> Result<()> {
                         tracing::warn!("qa sweeper: API call failed: {e:#}");
                     }
                 }
+                // SoW-4: outcome sweep — stamps `resolved_clean` on
+                // QAs whose owning task has been done >= 7 days. Cheap
+                // single UPDATE; safe to run every tick.
+                match sweep_api.sweep_clean_qa(7).await {
+                    Ok(n) if n > 0 => {
+                        info!("qa sweeper: stamped {n} QA(s) as resolved_clean");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("qa clean-sweeper: API call failed: {e:#}");
+                    }
+                }
             }
         });
     }

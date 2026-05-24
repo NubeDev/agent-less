@@ -162,3 +162,50 @@ pub async fn escalate_expired_ai_qa(pool: &PgPool) -> Result<Vec<TaskQaItem>, Ap
     .await?;
     Ok(rows)
 }
+
+/// SoW-4 outcome hook: stamp every resolved QA on this task as the
+/// given outcome, but only when the row is still at `outcome = 'unknown'`
+/// so the first decisive signal wins (a revert beats a follow-up if
+/// both happen).
+pub async fn set_qa_outcome_for_task(
+    pool: &PgPool,
+    task_id: Uuid,
+    outcome: &str,
+) -> Result<u64, AppError> {
+    let res = sqlx::query(
+        "UPDATE diraigent.task_qa_item
+         SET outcome = $2
+         WHERE task_id = $1
+           AND status = 'resolved'
+           AND outcome = 'unknown'",
+    )
+    .bind(task_id)
+    .bind(outcome)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// SoW-4 clean sweeper: for every resolved QA whose owning task has
+/// been `done` for at least `min_age_days` and still has
+/// `outcome = 'unknown'`, set the outcome to `resolved_clean`.
+///
+/// Returns the count of rows updated. Safe to run as often as desired:
+/// once a row leaves `unknown` it is no longer matched.
+pub async fn sweep_clean_qa_outcome(pool: &PgPool, min_age_days: i32) -> Result<u64, AppError> {
+    let res = sqlx::query(
+        "UPDATE diraigent.task_qa_item q
+         SET outcome = 'resolved_clean'
+         FROM diraigent.task t
+         WHERE q.task_id = t.id
+           AND q.status = 'resolved'
+           AND q.outcome = 'unknown'
+           AND t.state = 'done'
+           AND t.reverted_at IS NULL
+           AND t.updated_at < now() - make_interval(days => $1)",
+    )
+    .bind(min_age_days)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}

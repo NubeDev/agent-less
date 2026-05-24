@@ -294,3 +294,204 @@ async fn task_update_accepts_handover_kind() {
 
     app.cleanup().await;
 }
+
+/// SoW-4 outcome: creating an observation that points back at a
+/// source_task_id stamps that task's resolved QAs as
+/// `resolved_followup`. Pending QAs are untouched.
+#[tokio::test]
+async fn qa_outcome_followup_via_observation() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-followup").await;
+
+    let task = app.create_task(project_id, "had a qa").await;
+    let task_id = task["id"].as_str().unwrap();
+    let task_uuid: uuid::Uuid = task_id.parse().unwrap();
+
+    let resolved_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder,
+              status, answered_at, answer)
+         VALUES ($1, $2, 'implement', 'question', 'q1?', 'ai',
+                 'resolved', now(), 'yes')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    let pending_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder)
+         VALUES ($1, $2, 'implement', 'question', 'q2?', 'human')
+         RETURNING id",
+    )
+    .bind(task_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    let r = app
+        .send(post_json(
+            &format!("/v1/projects/{project_id}/observations"),
+            json!({
+                "title": "regression spotted",
+                "source_task_id": task_id,
+            }),
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "create obs: {}", r.json);
+
+    let resolved_outcome: (String,) =
+        sqlx::query_as("SELECT outcome FROM diraigent.task_qa_item WHERE id = $1")
+            .bind(resolved_id)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(resolved_outcome.0, "resolved_followup");
+
+    let pending_outcome: (String,) =
+        sqlx::query_as("SELECT outcome FROM diraigent.task_qa_item WHERE id = $1")
+            .bind(pending_id)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(pending_outcome.0, "unknown", "pending QAs are not stamped");
+
+    // Idempotency: outcome already set, second observation must not
+    // overwrite (e.g. a later revert would still be 'resolved_followup'
+    // because first-decisive-signal wins).
+    let r2 = app
+        .send(post_json(
+            &format!("/v1/projects/{project_id}/observations"),
+            json!({
+                "title": "another follow-up",
+                "source_task_id": task_id,
+            }),
+        ))
+        .await;
+    assert_eq!(r2.status, StatusCode::OK);
+    let still: (String,) =
+        sqlx::query_as("SELECT outcome FROM diraigent.task_qa_item WHERE id = $1")
+            .bind(resolved_id)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(still.0, "resolved_followup");
+
+    app.cleanup().await;
+}
+
+/// SoW-4 clean sweeper: resolved QAs on a task that has been `done`
+/// for at least `min_age_days` are stamped `resolved_clean`. Reverted
+/// tasks, in-flight tasks, and already-stamped QAs are left alone.
+#[tokio::test]
+async fn qa_outcome_sweep_clean() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-clean").await;
+
+    // Task A: done, old enough → should flip.
+    let task_a = app.create_task(project_id, "done long ago").await;
+    let task_a_uuid: uuid::Uuid = task_a["id"].as_str().unwrap().parse().unwrap();
+    sqlx::query(
+        "UPDATE diraigent.task
+            SET state = 'done', updated_at = now() - interval '30 days'
+          WHERE id = $1",
+    )
+    .bind(task_a_uuid)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let qa_a: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder,
+              status, answered_at, answer)
+         VALUES ($1, $2, 'implement', 'question', 'a?', 'ai',
+                 'resolved', now() - interval '30 days', 'yes')
+         RETURNING id",
+    )
+    .bind(task_a_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // Task B: done but reverted → must NOT flip.
+    let task_b = app.create_task(project_id, "reverted").await;
+    let task_b_uuid: uuid::Uuid = task_b["id"].as_str().unwrap().parse().unwrap();
+    sqlx::query(
+        "UPDATE diraigent.task
+            SET state = 'done', reverted_at = now(), updated_at = now() - interval '30 days'
+          WHERE id = $1",
+    )
+    .bind(task_b_uuid)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let qa_b: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder,
+              status, answered_at, answer)
+         VALUES ($1, $2, 'implement', 'question', 'b?', 'ai',
+                 'resolved', now() - interval '30 days', 'yes')
+         RETURNING id",
+    )
+    .bind(task_b_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    // Task C: still in flight (backlog) → must NOT flip.
+    let task_c = app.create_task(project_id, "in flight").await;
+    let task_c_uuid: uuid::Uuid = task_c["id"].as_str().unwrap().parse().unwrap();
+    let qa_c: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO diraigent.task_qa_item
+             (task_id, project_id, step_name, kind, prompt, responder,
+              status, answered_at, answer)
+         VALUES ($1, $2, 'implement', 'question', 'c?', 'ai',
+                 'resolved', now(), 'yes')
+         RETURNING id",
+    )
+    .bind(task_c_uuid)
+    .bind(project_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+
+    let r = app
+        .send(post_json("/v1/qa/sweep-clean?min_age_days=7", json!({})))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "sweep-clean: {}", r.json);
+    let updated = r.json["updated"].as_u64().unwrap();
+    assert!(updated >= 1, "expected at least one QA stamped clean");
+
+    let outcome = |id: uuid::Uuid| {
+        let pool = app.pool.clone();
+        async move {
+            let row: (String,) =
+                sqlx::query_as("SELECT outcome FROM diraigent.task_qa_item WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            row.0
+        }
+    };
+
+    assert_eq!(outcome(qa_a).await, "resolved_clean");
+    assert_eq!(outcome(qa_b).await, "unknown", "reverted must not flip");
+    assert_eq!(outcome(qa_c).await, "unknown", "in-flight must not flip");
+
+    // Idempotency: second call updates nothing new for these rows.
+    let qa_a_before = outcome(qa_a).await;
+    let r2 = app
+        .send(post_json("/v1/qa/sweep-clean?min_age_days=7", json!({})))
+        .await;
+    assert_eq!(r2.status, StatusCode::OK);
+    assert_eq!(outcome(qa_a).await, qa_a_before);
+
+    app.cleanup().await;
+}

@@ -237,27 +237,54 @@ Worker flow (`engine/worker.rs`):
 
 ---
 
-## SoW-4 — QA-decision telemetry  ⬜
+## SoW-4 — QA-decision telemetry  ✅ DONE
 
 **One-line:** one column on the QA table so we can later tune
 `min_confidence` and compare modes.
 
 ### Build
-- [ ] Migration `049_task_qa_item_outcome.sql`: add `outcome` column
+- [x] Migration `049_task_qa_item_outcome.sql`: add `outcome` column
   (`resolved_clean | resolved_reverted | resolved_followup | unknown`),
   default `unknown`.
-- [ ] On task revert event: update related QA items to `resolved_reverted`.
-- [ ] On follow-up observation/task linked to a QA-resolved task:
+- [x] On task revert event: update related QA items to `resolved_reverted`.
+- [x] On follow-up observation/task linked to a QA-resolved task:
   update to `resolved_followup`.
-- [ ] On task `done` with no revert/follow-up after N days:
+- [x] On task `done` with no revert/follow-up after N days:
   update to `resolved_clean` (background sweeper).
 
 ### Tests
-- [ ] Backfill query is idempotent.
-- [ ] Each outcome transition has a test.
+- [x] Backfill query is idempotent.
+- [x] Each outcome transition has a test.
 
 ### Exit
 - The QA table has accurate `outcome` data on real workflows. No UI yet.
+
+### How SoW-4 lands
+
+- **Column.** `diraigent.task_qa_item.outcome` is a `text` column with
+  a CHECK constraint over the four values above. All historical and
+  new rows start at `unknown`; the column is only ever written by the
+  three hooks below, never by the worker.
+- **First-decisive-signal wins.** Every hook uses
+  `WHERE status='resolved' AND outcome='unknown'`, so the first hook
+  to fire on a row stamps the outcome and subsequent hooks are no-ops.
+  This is intentional: a revert is more informative than a follow-up,
+  and a follow-up is more informative than the passage of time.
+- **Revert hook** (`routes/git.rs::revert_task`) — runs
+  `set_qa_outcome_for_task(task_id, "resolved_reverted")` after the
+  `reverted_at` UPDATE succeeds. Best-effort; failure is logged and
+  does not break the revert.
+- **Follow-up hook** (`routes/observations.rs::create`) — when
+  `req.source_task_id` is set, stamps that source task's resolved QAs
+  as `resolved_followup`. Same best-effort logging contract.
+- **Clean sweeper** (`POST /v1/qa/sweep-clean?min_age_days=7`) — single
+  UPDATE/FROM/WHERE that finds resolved QAs whose owning task has been
+  `done` for ≥ `min_age_days`, has no `reverted_at`, and stamps them
+  `resolved_clean`. Orchestra calls this on the existing 30s sweeper
+  tick alongside `sweep-expired`; both are cheap and idempotent.
+- **No UI yet.** SCOPE deliberately ends here — the data is what we
+  need to revisit `min_confidence` and per-step accept-check tuning in
+  later SoWs.
 
 ---
 

@@ -479,6 +479,16 @@ pub struct TaskQaItem {
     pub answered_at: Option<DateTime<Utc>>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub metadata: serde_json::Value,
+    /// SoW-4: empirical outcome of the resolved QA. Defaults to `unknown`;
+    /// updated by the revert hook, observation-create hook, and the
+    /// `sweep-clean` periodic sweeper.
+    #[serde(default = "default_qa_outcome")]
+    #[sqlx(default)]
+    pub outcome: String,
+}
+
+fn default_qa_outcome() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]

@@ -37,6 +37,22 @@ async fn create(
     validation::validate_create_observation(&req, pkg.as_ref())?;
     require_authority(state.db.as_ref(), agent_id, user_id, project_id, "execute").await?;
     let o = state.db.create_observation(project_id, &req).await?;
+
+    // SoW-4: if this observation was raised against a prior task,
+    // mark resolved QAs on *that* task as `resolved_followup` — they
+    // were "answered" but downstream signal says they triggered more
+    // work. Best-effort.
+    if let Some(src) = req.source_task_id
+        && let Err(e) =
+            crate::repository::set_qa_outcome_for_task(&state.pool, src, "resolved_followup").await
+    {
+        tracing::warn!(
+            source_task_id = %src,
+            error = %e,
+            "create_observation: failed to stamp resolved_followup on QA items"
+        );
+    }
+
     Ok(Json(o))
 }
 

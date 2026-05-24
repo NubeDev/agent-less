@@ -26,6 +26,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/qa/{id}", get(get_one))
         .route("/v1/qa/{id}/answer", post(answer))
         .route("/v1/qa/sweep-expired", post(sweep_expired))
+        .route("/v1/qa/sweep-clean", post(sweep_clean))
 }
 
 async fn create(
@@ -334,4 +335,31 @@ async fn sweep_expired(
     }
 
     Ok(Json(escalated))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct SweepCleanParams {
+    /// Minimum number of days a task must have been `done` before its
+    /// resolved QAs are stamped `resolved_clean`. Defaults to 7.
+    min_age_days: Option<i32>,
+}
+
+#[derive(serde::Serialize)]
+struct SweepCleanResponse {
+    updated: u64,
+}
+
+/// SoW-4 outcome sweeper. For every resolved QA on a task that has
+/// been `done` for at least `min_age_days`, was never reverted, and
+/// still carries `outcome = 'unknown'`, stamp the outcome as
+/// `resolved_clean`. Idempotent.
+async fn sweep_clean(
+    State(state): State<AppState>,
+    AuthUser(_user_id): AuthUser,
+    OptionalAgentId(_agent_id): OptionalAgentId,
+    axum::extract::Query(params): axum::extract::Query<SweepCleanParams>,
+) -> Result<Json<SweepCleanResponse>, AppError> {
+    let days = params.min_age_days.unwrap_or(7).clamp(0, 365);
+    let updated = crate::repository::sweep_clean_qa_outcome(&state.pool, days).await?;
+    Ok(Json(SweepCleanResponse { updated }))
 }

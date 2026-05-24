@@ -275,6 +275,19 @@ impl ProjectsApi {
         Ok(as_array(&v))
     }
 
+    /// SoW-4 outcome sweeper: ask the API to stamp `resolved_clean` on
+    /// QAs whose owning task has been done for `min_age_days` without
+    /// a revert or follow-up. Returns the number of rows updated.
+    pub async fn sweep_clean_qa(&self, min_age_days: i32) -> Result<u64> {
+        let v = self
+            .post(
+                &format!("/qa/sweep-clean?min_age_days={min_age_days}"),
+                &serde_json::json!({}),
+            )
+            .await?;
+        Ok(v.get("updated").and_then(|n| n.as_u64()).unwrap_or(0))
+    }
+
     /// SoW-2: list QA items for a task filtered by status. The API
     /// already supports `GET /v1/qa?status=…&task_id=…`, so the
     /// orchestra side just narrows the response client-side.
