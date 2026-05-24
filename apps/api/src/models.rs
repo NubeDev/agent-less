@@ -454,6 +454,63 @@ pub struct TaskUpdate {
     pub created_at: DateTime<Utc>,
 }
 
+// ── Task QA Items (SoW-1) ──
+
+/// Structured question raised by an agent step via the `DIRAIGENT_QA` sentinel.
+///
+/// Each row pairs with a `task_update` (kind = `question`) for backwards
+/// compatibility with the existing review-thread UI; the bridge row's
+/// `metadata.qa_item_id` points back at this row.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct TaskQaItem {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub project_id: Uuid,
+    pub step_name: String,
+    pub kind: String,
+    pub prompt: String,
+    pub options: Option<serde_json::Value>,
+    pub responder: String,
+    pub answer: Option<String>,
+    pub answered_by: Option<String>,
+    pub status: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub answered_at: Option<DateTime<Utc>>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct CreateTaskQaItem {
+    pub task_id: Uuid,
+    pub project_id: Uuid,
+    pub step_name: String,
+    pub prompt: String,
+    pub kind: Option<String>,
+    pub options: Option<serde_json::Value>,
+    pub responder: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AnswerTaskQaItem {
+    /// Free-text or selected-option answer body.
+    pub answer: String,
+    /// Step to resume into. Must satisfy `can_transition(current_state, target_step)`.
+    pub target_step: String,
+}
+
+#[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
+pub struct TaskQaItemFilters {
+    pub status: Option<String>,
+    pub task_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 // ── Task Comments ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
