@@ -326,6 +326,28 @@ impl TaskSource for LocalTaskSource {
         Ok(update)
     }
 
+    async fn post_qa_item(
+        &self,
+        task_id: &str,
+        _project_id: &str,
+        step_name: &str,
+        prompt: &str,
+        options: Option<&[String]>,
+    ) -> Result<Value> {
+        let item = json!({
+            "task_id": task_id,
+            "step_name": step_name,
+            "prompt": prompt,
+            "options": options,
+            "kind": "question",
+            "responder": "human",
+            "status": "pending",
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        });
+        tracing::info!("local: QA[{task_id}] {prompt}");
+        Ok(item)
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let tasks = self.tasks.lock().unwrap();
         Ok(tasks

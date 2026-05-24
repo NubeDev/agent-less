@@ -12,10 +12,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::models::{CreateTaskQaItem, TaskQaItem, TaskQaItemFilters};
 
-pub async fn create_qa_item(
-    pool: &PgPool,
-    req: &CreateTaskQaItem,
-) -> Result<TaskQaItem, AppError> {
+pub async fn create_qa_item(pool: &PgPool, req: &CreateTaskQaItem) -> Result<TaskQaItem, AppError> {
     let kind = req.kind.as_deref().unwrap_or("question");
     let responder = req.responder.as_deref().unwrap_or("human");
     let metadata = req.metadata.clone().unwrap_or(serde_json::json!({}));

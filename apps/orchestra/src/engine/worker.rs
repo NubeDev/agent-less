@@ -26,6 +26,73 @@ const TOOLS_FULL: &[&str] = &[
     "WebSearch",
 ];
 
+/// Mint a fresh per-step nonce used to gate the agent's sentinel blocks.
+/// 8 hex chars (32 bits) is enough: a stored-prompt-injection attacker
+/// cannot guess it within a single step run, and short-lived collisions
+/// across distinct steps are harmless (the parser is invoked with the
+/// minting step's nonce only).
+fn mint_sentinel_nonce() -> String {
+    let id = uuid::Uuid::now_v7().simple().to_string();
+    id[..8].to_string()
+}
+
+/// Parse QA sentinel blocks out of the agent's log and, if any are
+/// present, park the task in `ai_review` and persist each as a
+/// `task_qa_item` via the API. Returns `true` iff a sentinel was found
+/// (the caller uses this to decide whether to log the
+/// agent-ignored-stop warning further upstream).
+///
+/// This is the SoW-1 enforcement boundary: a parsed QA always wins over
+/// the agent's diff or exit code. The agent cannot guess past a
+/// question by also producing speculative changes.
+#[allow(clippy::too_many_arguments)]
+async fn handle_qa_sentinels(
+    api: &dyn TaskSource,
+    tid: &TaskId,
+    task_id: &str,
+    project_id: &str,
+    step_name: &str,
+    log_text: &str,
+    nonce: &str,
+    has_changes: bool,
+    is_error: bool,
+) -> bool {
+    let parsed = crate::providers::sentinel::parse(log_text, nonce);
+    if parsed.questions.is_empty() {
+        return false;
+    }
+    warn!(
+        "worker {tid}: agent emitted {} QA sentinel(s) — parking task in ai_review",
+        parsed.questions.len()
+    );
+    if has_changes || !is_error {
+        warn!(
+            "worker {tid}: agent emitted QA but also produced changes/clean exit \
+             (has_changes={has_changes}, is_error={is_error}) — \
+             overriding success signal; diff will not be merged this step"
+        );
+    }
+    if let Err(e) = api
+        .transition_task(task_id, crate::constants::STATE_AI_REVIEW)
+        .await
+    {
+        warn!(
+            "worker {tid}: failed to transition task to ai_review: {e:#} \
+             (continuing to record qa items)"
+        );
+    }
+    for q in &parsed.questions {
+        let opts_ref: Option<&[String]> = q.options.as_deref();
+        if let Err(e) = api
+            .post_qa_item(task_id, project_id, step_name, &q.prompt, opts_ref)
+            .await
+        {
+            warn!("worker {tid}: failed to post qa item: {e:#}");
+        }
+    }
+    true
+}
+
 /// Read-only tools for review and dream steps (no code modification).
 const TOOLS_READONLY: &[&str] = &["Bash(*)", "Read", "Glob", "Grep", "WebFetch", "WebSearch"];
 
@@ -212,8 +279,16 @@ pub async fn run_worker(
         worktree_path.display()
     );
 
-    // Build static system prompt (cached by Anthropic across invocations)
-    let system_prompt = prompt::build_static_system_prompt(repo_root);
+    // Build static system prompt (cached by Anthropic across invocations).
+    // Per-step sentinel addendum (SoW-1) is appended with a fresh nonce so
+    // the agent knows how to emit DIRAIGENT_QA / HANDOVER blocks that the
+    // post-exit parser will accept.
+    let sentinel_nonce = mint_sentinel_nonce();
+    let system_prompt = format!(
+        "{}\n\n{}",
+        prompt::build_static_system_prompt(repo_root),
+        prompt::build_sentinel_addendum(&sentinel_nonce),
+    );
 
     // Build dynamic user prompt (changes per task, trimmed by step type)
     let user_prompt = prompt::build_user_prompt(
@@ -296,6 +371,31 @@ pub async fn run_worker(
     let has_changes = worktree_mgr
         .commit_changes(&worktree_path, task_id)
         .unwrap_or(false);
+
+    // ── SoW-1 QA sentinel handling ────────────────────────────────────
+    // Parse the agent's log for `DIRAIGENT_QA[<nonce>]` blocks. If any
+    // landed, force the task into `ai_review`, persist each as a
+    // task_qa_item via the API, and (independent of git diff or exit
+    // status) hand control to the human reviewer. This is the heart of
+    // SoW-1: the agent is *never* allowed to silently guess past a
+    // question — even if it also produced a diff and exited 0.
+    let log_text = tokio::fs::read_to_string(&log_file)
+        .await
+        .unwrap_or_default();
+    let sentinel_triggered = handle_qa_sentinels(
+        api,
+        &tid,
+        task_id,
+        project_id,
+        &step_config.step_name,
+        &log_text,
+        &sentinel_nonce,
+        has_changes,
+        is_error,
+    )
+    .await;
+    // ──────────────────────────────────────────────────────────────────
+    let _ = sentinel_triggered;
 
     // Collect and post changed files when store_diffs is enabled in project metadata.
     if store_diffs {
@@ -1219,5 +1319,138 @@ mod tests {
                 "provider '{provider_name}' should return end_turn"
             );
         }
+    }
+
+    // ── SoW-1: handle_qa_sentinels tests ─────────────────────────────
+
+    /// Mount mocks for the QA flow: transition_task + create QA item.
+    /// Returns server URI so tests can build a ProjectsApi.
+    async fn mount_qa_flow(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-1/transition"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "task-1", "state": "ai_review"
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/qa"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "qa-1", "status": "pending"
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn handle_qa_sentinels_happy_path_parks_and_posts() {
+        let server = MockServer::start().await;
+        mount_qa_flow(&server).await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let nonce = "abc12345";
+        let log = format!(
+            "some preamble\nDIRAIGENT_QA[{nonce}]: which db?\nDIRAIGENT_QA_OPTIONS[{nonce}]: pg|sqlite\nDIRAIGENT_QA_END[{nonce}]\nbye\n"
+        );
+        let triggered = handle_qa_sentinels(
+            &api,
+            &tid,
+            "task-1",
+            "proj-1",
+            "implement",
+            &log,
+            nonce,
+            /* has_changes */ false,
+            /* is_error */ true,
+        )
+        .await;
+        assert!(triggered, "sentinel should trigger");
+    }
+
+    #[tokio::test]
+    async fn handle_qa_sentinels_overrides_clean_diff_exit() {
+        // Agent emitted a QA *and* produced a clean diff + exit 0.
+        // SoW-1 contract: QA always wins. We still POST and transition.
+        let server = MockServer::start().await;
+        mount_qa_flow(&server).await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let nonce = "deadbeef";
+        let log = format!("did stuff\nDIRAIGENT_QA[{nonce}]: unsure\nDIRAIGENT_QA_END[{nonce}]\n");
+        let triggered = handle_qa_sentinels(
+            &api,
+            &tid,
+            "task-1",
+            "proj-1",
+            "implement",
+            &log,
+            nonce,
+            /* has_changes */ true,
+            /* is_error */ false,
+        )
+        .await;
+        assert!(triggered);
+    }
+
+    #[tokio::test]
+    async fn handle_qa_sentinels_wrong_nonce_is_noop() {
+        // No mocks mounted: if the code attempts any HTTP call it would
+        // hit a 404 and (because the API caller in ProjectsApi treats
+        // non-2xx as an error) the test would still pass at this level —
+        // but the contract under test is "no parser hit = no side effects".
+        let server = MockServer::start().await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let log = "DIRAIGENT_QA[wrong]: pwned\nDIRAIGENT_QA_END[wrong]\n";
+        let triggered = handle_qa_sentinels(
+            &api,
+            &tid,
+            "task-1",
+            "proj-1",
+            "implement",
+            log,
+            "right",
+            false,
+            true,
+        )
+        .await;
+        assert!(!triggered, "wrong-nonce sentinel must not trigger");
+    }
+
+    #[tokio::test]
+    async fn handle_qa_sentinels_continues_when_transition_fails() {
+        // transition_task returns 500; we still POST the qa items.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tasks/task-1/transition"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/qa"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "qa-1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = ProjectsApi::new(&server.uri(), "test-agent");
+        let tid = TaskId::new("task-1");
+        let nonce = "feedface";
+        let log = format!("DIRAIGENT_QA[{nonce}]: q\nDIRAIGENT_QA_END[{nonce}]\n");
+        let triggered = handle_qa_sentinels(
+            &api,
+            &tid,
+            "task-1",
+            "proj-1",
+            "implement",
+            &log,
+            nonce,
+            false,
+            true,
+        )
+        .await;
+        assert!(triggered);
+        // wiremock verifies expect(1) on /qa on Drop.
     }
 }

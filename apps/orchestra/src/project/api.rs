@@ -204,6 +204,38 @@ impl ProjectsApi {
         .await
     }
 
+    /// Create a structured QA item for a task (SoW-1).
+    ///
+    /// Called by the worker after parsing a `DIRAIGENT_QA` sentinel in the
+    /// step's log. The API persists the row, writes a bridge
+    /// `task_update` of kind `question`, and emits a `qa_item.created`
+    /// audit event. Returns the created row as JSON.
+    pub async fn post_qa_item(
+        &self,
+        task_id: &str,
+        project_id: &str,
+        step_name: &str,
+        prompt: &str,
+        options: Option<&[String]>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({
+            "task_id": task_id,
+            "project_id": project_id,
+            "step_name": step_name,
+            "prompt": prompt,
+            "kind": "question",
+            "responder": "human",
+        });
+        if let Some(opts) = options {
+            body["options"] = serde_json::Value::Array(
+                opts.iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            );
+        }
+        self.post("/qa", &body).await
+    }
+
     pub async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         let val = self.get(&format!("/tasks/{task_id}/updates")).await?;
         Ok(as_array(&val))
@@ -657,6 +689,16 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
 
     async fn post_task_update(&self, task_id: &str, kind: &str, content: &str) -> Result<Value> {
         ProjectsApi::post_task_update(self, task_id, kind, content).await
+    }
+    async fn post_qa_item(
+        &self,
+        task_id: &str,
+        project_id: &str,
+        step_name: &str,
+        prompt: &str,
+        options: Option<&[String]>,
+    ) -> Result<Value> {
+        ProjectsApi::post_qa_item(self, task_id, project_id, step_name, prompt, options).await
     }
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         ProjectsApi::get_task_updates(self, task_id).await

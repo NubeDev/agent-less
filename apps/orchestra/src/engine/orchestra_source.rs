@@ -242,6 +242,21 @@ impl TaskSource for OrchestraTaskSource {
         Ok(json!({"id": id, "kind": kind, "content": content}))
     }
 
+    async fn post_qa_item(
+        &self,
+        task_id: &str,
+        project_id: &str,
+        step_name: &str,
+        prompt: &str,
+        options: Option<&[String]>,
+    ) -> Result<Value> {
+        // Orchestra-source delegates to the upstream API: the QA loop
+        // (SoW-1) is rendered server-side and surfaced over SSE.
+        self.api
+            .post_qa_item(task_id, project_id, step_name, prompt, options)
+            .await
+    }
+
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>> {
         db::task_updates::list_for_task(&self.db, task_id)
     }

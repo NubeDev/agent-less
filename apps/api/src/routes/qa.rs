@@ -22,9 +22,76 @@ use crate::repository as qa_items;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/v1/qa", get(list_pending))
+        .route("/v1/qa", get(list_pending).post(create))
         .route("/v1/qa/{id}", get(get_one))
         .route("/v1/qa/{id}/answer", post(answer))
+}
+
+async fn create(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Json(req): Json<crate::models::CreateTaskQaItem>,
+) -> Result<Json<TaskQaItem>, AppError> {
+    if req.prompt.trim().is_empty() {
+        return Err(AppError::Validation("prompt cannot be empty".into()));
+    }
+    if req.step_name.trim().is_empty() {
+        return Err(AppError::Validation("step_name cannot be empty".into()));
+    }
+    require_authority(
+        state.db.as_ref(),
+        agent_id,
+        user_id,
+        req.project_id,
+        "execute",
+    )
+    .await?;
+    // Sanity: the task must belong to the named project.
+    let task = state.db.get_task_by_id(req.task_id).await?;
+    if task.project_id != req.project_id {
+        return Err(AppError::Validation(
+            "task_id does not belong to project_id".into(),
+        ));
+    }
+    let item = qa_items::create_qa_item(&state.pool, &req).await?;
+
+    // Bridge into task_update (kind=question) so existing review-thread UI
+    // surfaces it; metadata.qa_item_id links the rows.
+    let bridge_metadata = serde_json::json!({
+        "qa_item_id": item.id,
+        "qa_kind": item.kind,
+        "qa_status": item.status,
+        "step_name": item.step_name,
+    });
+    let _ = sqlx::query(
+        "INSERT INTO diraigent.task_update (task_id, agent_id, kind, content, metadata)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(item.task_id)
+    .bind(agent_id)
+    .bind("question")
+    .bind(&item.prompt)
+    .bind(&bridge_metadata)
+    .execute(&state.pool)
+    .await;
+
+    state.fire_event(
+        item.project_id,
+        "qa_item.created",
+        "task_qa_item",
+        item.id,
+        agent_id,
+        Some(user_id),
+        serde_json::json!({
+            "qa_item_id": item.id,
+            "task_id": item.task_id,
+            "step_name": item.step_name,
+            "responder": item.responder,
+        }),
+    );
+
+    Ok(Json(item))
 }
 
 async fn list_pending(

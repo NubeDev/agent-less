@@ -41,6 +41,17 @@ pub trait TaskSource: Send + Sync {
     // ── Task updates, comments, cost ──
 
     async fn post_task_update(&self, task_id: &str, kind: &str, content: &str) -> Result<Value>;
+    /// Create a structured QA item for the agent's question (SoW-1).
+    /// Implementations must POST to `/v1/qa` so the API can persist the
+    /// row, bridge into `task_update`, and broadcast over SSE.
+    async fn post_qa_item(
+        &self,
+        task_id: &str,
+        project_id: &str,
+        step_name: &str,
+        prompt: &str,
+        options: Option<&[String]>,
+    ) -> Result<Value>;
     async fn get_task_updates(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn get_task_comments(&self, task_id: &str) -> Result<Vec<Value>>;
     async fn post_comment(&self, task_id: &str, content: &str) -> Result<Value>;

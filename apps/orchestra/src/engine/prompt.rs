@@ -24,6 +24,34 @@ pub fn build_static_system_prompt(repo_root: &Path) -> String {
     )
 }
 
+/// Build the per-step sentinel-format addendum that teaches the agent how to
+/// emit `DIRAIGENT_QA` / `HANDOVER` blocks the orchestra can parse (SoW-1).
+///
+/// The `<nonce>` is minted per step and is required: sentinels with a
+/// different bracket are silently ignored, which defeats stored-prompt
+/// injection from issue bodies, READMEs, or MCP tool output.
+pub fn build_sentinel_addendum(nonce: &str) -> String {
+    format!(
+        "## Asking the orchestra a question (SoW-1)\n\n\
+         When you need a decision you cannot make safely on your own, STOP and emit a QA sentinel instead of guessing. The orchestra parses these blocks from your stdout after you exit and parks the task in `ai_review` until a human (SoW-1) or the AI responder (SoW-2 onward) answers.\n\n\
+         Format (each line MUST start at column 0 of a fresh line):\n\n\
+         ```\n\
+         DIRAIGENT_QA[{nonce}]: <one-line question>\n\
+         DIRAIGENT_QA_OPTIONS[{nonce}]: option a|option b|option c\n\
+         DIRAIGENT_QA_END[{nonce}]\n\
+         ```\n\n\
+         - The `OPTIONS` line is optional. Include it for closed choices.\n\
+         - The nonce `{nonce}` is unique to this step. Do NOT invent another value — sentinels with any other bracket are silently dropped.\n\
+         - If you emit a QA, do not also commit speculative code. The orchestra treats your exit as `ai_review` regardless of exit code or diff, so a speculative diff will not be merged.\n\n\
+         ## Closing the step (SoW-3 preview)\n\n\
+         When your step finished cleanly you may end with a HANDOVER block summarising what you did and what the next step needs to know:\n\n\
+         ```\n\
+         HANDOVER[{nonce}]: <multi-line summary>\n\
+         HANDOVER_END[{nonce}]\n\
+         ```\n"
+    )
+}
+
 /// Build the dynamic user prompt for Claude Code's `-p` flag.
 ///
 /// This content changes per task: identity, project context, active work,
