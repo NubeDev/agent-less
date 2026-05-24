@@ -343,11 +343,14 @@ panels show "no data yet").
    `GET /v1/{project}/reports`. `outcome` filter requires reports to
    carry a derived outcome field (not present today).
 
-3. **QA audit events** \u2014 the audit page now styles `entity_type='qa'`
-   with peach + extra action colors (`answered`/`resolved`/`expired`),
-   but the worker is not confirmed to emit these audit rows. Verify
-   the QA lifecycle writes to the audit table; if not, add emission
-   in `apps/api/src/qa.rs` / worker QA resolution path.
+3. **QA audit events** — ✅ resolved. The QA lifecycle already
+   wrote audit rows for `created` / `answered` / `escalated` /
+   `cancelled_cascade` / `ai_confidence_stamped` via `fire_event` in
+   `routes/qa.rs` and `routes/tasks.rs`. Added a `resolved` emission
+   right after the status flip in `answer()` so the audit log shows
+   the full lifecycle terminator (matching `AUDIT_ACTION_COLORS`
+   which styles `resolved` green) — webhook subscribers that only
+   care about closed-out QAs can listen on `resolved` directly.
 
 4. **Knowledge-touched provenance for tasks** \u2014 UI-5's "Knowledge
    touched" panel was deferred because the worker does not yet

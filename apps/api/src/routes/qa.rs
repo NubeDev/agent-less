@@ -82,8 +82,8 @@ async fn create(
 
     state.fire_event(
         item.project_id,
-        "qa_item.created",
-        "task_qa_item",
+        "created",
+        "qa",
         item.id,
         agent_id,
         Some(user_id),
@@ -225,8 +225,8 @@ async fn answer(
     // 6. Audit + webhooks.
     state.fire_event(
         transitioned.project_id,
-        "qa_item.answered",
-        "task_qa_item",
+        "answered",
+        "qa",
         resolved.id,
         agent_id,
         Some(user_id),
@@ -237,6 +237,27 @@ async fn answer(
             "answered_at": Utc::now(),
         }),
     );
+
+    // Also emit a `resolved` event so the audit-log filter for QA
+    // lifecycle terminal states (resolved / expired) shows the full
+    // close-out, not just the inbound answer. Webhook subscribers that
+    // only care about completed-and-closed QAs can listen on `resolved`
+    // without having to reason about the answered → resolved sequence.
+    if resolved.status == "resolved" {
+        state.fire_event(
+            transitioned.project_id,
+            "resolved",
+            "qa",
+            resolved.id,
+            agent_id,
+            Some(user_id),
+            serde_json::json!({
+                "qa_item_id": resolved.id,
+                "task_id": item.task_id,
+                "resolved_via": "human_answer",
+            }),
+        );
+    }
 
     Ok(Json(resolved))
 }
@@ -323,8 +344,8 @@ async fn sweep_expired(
 
         state.fire_event(
             item.project_id,
-            "qa_item.escalated",
-            "task_qa_item",
+            "escalated",
+            "qa",
             item.id,
             agent_id,
             None,
@@ -429,5 +450,18 @@ async fn stamp_ai_confidence(
     let existing = qa_items::get_qa_item(&state.pool, id).await?;
     require_membership(state.db.as_ref(), agent_id, user_id, existing.project_id).await?;
     let row = qa_items::stamp_qa_ai_confidence(&state.pool, id, req.confidence).await?;
+    state.fire_event(
+        row.project_id,
+        "ai_confidence_stamped",
+        "qa",
+        row.id,
+        agent_id,
+        Some(user_id),
+        serde_json::json!({
+            "qa_item_id": row.id,
+            "task_id": row.task_id,
+            "confidence": req.confidence,
+        }),
+    );
     Ok(Json(row))
 }
