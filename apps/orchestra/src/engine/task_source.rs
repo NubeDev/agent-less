@@ -41,9 +41,15 @@ pub trait TaskSource: Send + Sync {
     // ── Task updates, comments, cost ──
 
     async fn post_task_update(&self, task_id: &str, kind: &str, content: &str) -> Result<Value>;
-    /// Create a structured QA item for the agent's question (SoW-1).
+    /// Create a structured QA item for the agent's question (SoW-1, extended in SoW-2).
     /// Implementations must POST to `/v1/qa` so the API can persist the
     /// row, bridge into `task_update`, and broadcast over SSE.
+    ///
+    /// `responder` is `"human"` (default, SoW-1) or `"ai"` (SoW-2 path).
+    /// When `expires_at_secs` is `Some(n)` the API stores
+    /// `expires_at = now + n` so the sweeper can escalate stuck AI QAs
+    /// to human review.
+    #[allow(clippy::too_many_arguments)]
     async fn post_qa_item(
         &self,
         task_id: &str,
@@ -51,6 +57,8 @@ pub trait TaskSource: Send + Sync {
         step_name: &str,
         prompt: &str,
         options: Option<&[String]>,
+        responder: &str,
+        expires_at_secs: Option<u32>,
     ) -> Result<Value>;
     /// SoW-2: post an AI-produced answer for a QA item. The API
     /// validates the implied state transition, records the answer, and

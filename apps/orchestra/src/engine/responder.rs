@@ -18,8 +18,10 @@
 //! call site. This module just shapes the prompt and parses the result.
 
 use crate::engine::qa_config::{AcceptMode, QaConfig};
+use crate::providers::{ProviderConfig, StepProvider};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Marker text the responder must surround its picked answer with.
 const ANSWER_OPEN: &str = "<answer>";
@@ -164,6 +166,36 @@ pub trait ResponderRunner: Send + Sync {
     async fn run(&self, pass: u8, prompt: &str) -> Result<String>;
 }
 
+/// Production [`ResponderRunner`] that bridges to the existing
+/// [`StepProvider`] machinery via `StepProvider::chat_once`.
+///
+/// Only providers that override the default `chat_once` (currently:
+/// `claude-code`) will work here — the others return a clear error.
+///
+/// The runner injects no system prompt and no tools: the prompt
+/// produced by [`build_responder_prompt`] is the whole context the
+/// model sees. Both passes use the same provider/config — the pure
+/// orchestrator in [`auto_answer_qa`] still calls run twice for
+/// `SecondPass`, and we rely on natural model nondeterminism for
+/// disagreement to surface.
+pub struct ProviderResponderRunner {
+    provider: Arc<dyn StepProvider>,
+    config: ProviderConfig,
+}
+
+impl ProviderResponderRunner {
+    pub fn new(provider: Arc<dyn StepProvider>, config: ProviderConfig) -> Self {
+        Self { provider, config }
+    }
+}
+
+#[async_trait]
+impl ResponderRunner for ProviderResponderRunner {
+    async fn run(&self, _pass: u8, prompt: &str) -> Result<String> {
+        self.provider.chat_once(prompt, &self.config).await
+    }
+}
+
 /// Build the responder prompt that gets fed to the LLM.
 ///
 /// Kept small and stable so the second-pass run can reasonably be
@@ -175,16 +207,16 @@ pub fn build_responder_prompt(question: &str, options: Option<&[String]>) -> Str
     p.push_str("<answer>your chosen answer</answer>\n");
     p.push_str("<confidence>0.NN</confidence>\n\n");
     p.push_str("Where confidence is between 0.0 and 1.0 reflecting how sure you are.\n");
-    if let Some(opts) = options {
-        if !opts.is_empty() {
-            p.push_str("Pick exactly one of these options for the <answer>:\n");
-            for o in opts {
-                p.push_str("- ");
-                p.push_str(o);
-                p.push('\n');
-            }
+    if let Some(opts) = options
+        && !opts.is_empty()
+    {
+        p.push_str("Pick exactly one of these options for the <answer>:\n");
+        for o in opts {
+            p.push_str("- ");
+            p.push_str(o);
             p.push('\n');
         }
+        p.push('\n');
     }
     p.push_str("Question:\n");
     p.push_str(question);
@@ -429,7 +461,7 @@ mod tests {
 
     #[test]
     fn build_prompt_includes_options() {
-        let p = build_responder_prompt("db?", Some(&vec!["pg".into(), "sqlite".into()]));
+        let p = build_responder_prompt("db?", Some(&["pg".into(), "sqlite".into()]));
         assert!(p.contains("- pg"));
         assert!(p.contains("- sqlite"));
         assert!(p.contains("Question:"));

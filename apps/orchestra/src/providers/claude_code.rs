@@ -73,6 +73,76 @@ impl StepProvider for ClaudeCodeProvider {
             is_error: is_err,
         })
     }
+
+    fn name(&self) -> &'static str {
+        "claude-code"
+    }
+
+    /// SoW-2 single-turn responder backend.
+    ///
+    /// Runs `claude -p --output-format text` with **no system prompt**,
+    /// **no tools**, **no MCP**, and **no session persistence**. The
+    /// working directory is a throwaway temp dir so the model has no
+    /// filesystem context to confuse with the parked task's worktree.
+    ///
+    /// Returns the assistant's reply as plain text. Stderr is captured
+    /// into the error message on non-zero exit so failures are
+    /// diagnosable.
+    async fn chat_once(&self, prompt: &str, config: &ProviderConfig) -> anyhow::Result<String> {
+        let scratch =
+            std::env::temp_dir().join(format!("diraigent-responder-{}", uuid::Uuid::now_v7()));
+        tokio::fs::create_dir_all(&scratch)
+            .await
+            .context("create responder scratch dir")?;
+
+        let mut args: Vec<String> = vec![
+            "-p".into(),
+            "--no-session-persistence".into(),
+            "--output-format".into(),
+            "text".into(),
+        ];
+        if let Some(m) = &config.model {
+            args.push("--model".into());
+            args.push(m.clone());
+        }
+
+        let mut child = Command::new("claude")
+            .args(&args)
+            .current_dir(&scratch)
+            .env_remove("CLAUDECODE")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .context("spawn claude (chat_once)")?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .await
+                .context("write prompt to claude stdin")?;
+            stdin.shutdown().await.ok();
+        }
+
+        let output = child
+            .wait_with_output()
+            .await
+            .context("wait for claude (chat_once)")?;
+
+        // Best-effort cleanup.
+        let _ = tokio::fs::remove_dir_all(&scratch).await;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            return Err(anyhow::anyhow!(
+                "claude chat_once exited with {}: {}",
+                output.status,
+                stderr.trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
 }
 
 async fn run_claude(

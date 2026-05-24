@@ -210,6 +210,7 @@ impl ProjectsApi {
     /// step's log. The API persists the row, writes a bridge
     /// `task_update` of kind `question`, and emits a `qa_item.created`
     /// audit event. Returns the created row as JSON.
+    #[allow(clippy::too_many_arguments)]
     pub async fn post_qa_item(
         &self,
         task_id: &str,
@@ -217,6 +218,8 @@ impl ProjectsApi {
         step_name: &str,
         prompt: &str,
         options: Option<&[String]>,
+        responder: &str,
+        expires_at_secs: Option<u32>,
     ) -> Result<Value> {
         let mut body = serde_json::json!({
             "task_id": task_id,
@@ -224,7 +227,7 @@ impl ProjectsApi {
             "step_name": step_name,
             "prompt": prompt,
             "kind": "question",
-            "responder": "human",
+            "responder": responder,
         });
         if let Some(opts) = options {
             body["options"] = serde_json::Value::Array(
@@ -232,6 +235,10 @@ impl ProjectsApi {
                     .map(|s| serde_json::Value::String(s.clone()))
                     .collect(),
             );
+        }
+        if let Some(secs) = expires_at_secs {
+            let expires_at = chrono::Utc::now() + chrono::Duration::seconds(secs as i64);
+            body["expires_at"] = serde_json::Value::String(expires_at.to_rfc3339());
         }
         self.post("/qa", &body).await
     }
@@ -719,8 +726,20 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         step_name: &str,
         prompt: &str,
         options: Option<&[String]>,
+        responder: &str,
+        expires_at_secs: Option<u32>,
     ) -> Result<Value> {
-        ProjectsApi::post_qa_item(self, task_id, project_id, step_name, prompt, options).await
+        ProjectsApi::post_qa_item(
+            self,
+            task_id,
+            project_id,
+            step_name,
+            prompt,
+            options,
+            responder,
+            expires_at_secs,
+        )
+        .await
     }
     async fn answer_qa_item(
         &self,

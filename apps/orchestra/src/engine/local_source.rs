@@ -333,18 +333,24 @@ impl TaskSource for LocalTaskSource {
         step_name: &str,
         prompt: &str,
         options: Option<&[String]>,
+        responder: &str,
+        expires_at_secs: Option<u32>,
     ) -> Result<Value> {
+        let expires_at = expires_at_secs
+            .map(|s| (chrono::Utc::now() + chrono::Duration::seconds(s as i64)).to_rfc3339());
         let item = json!({
+            "id": uuid::Uuid::now_v7().to_string(),
             "task_id": task_id,
             "step_name": step_name,
             "prompt": prompt,
             "options": options,
             "kind": "question",
-            "responder": "human",
+            "responder": responder,
+            "expires_at": expires_at,
             "status": "pending",
             "created_at": chrono::Utc::now().to_rfc3339(),
         });
-        tracing::info!("local: QA[{task_id}] {prompt}");
+        tracing::info!("local: QA[{task_id}] responder={responder} {prompt}");
         Ok(item)
     }
 

@@ -53,6 +53,31 @@ pub struct ResolvedStep {
     pub settings: Option<Value>,
 }
 
+/// Context inherited from the previous step in the playbook chain (SoW-2/3).
+///
+/// Replaces the bare `previous_step_output: Option<String>` field with a
+/// structured envelope so successive steps can pass forward:
+///
+/// - `from_step` — name of the step that produced this context.
+/// - `handover` — SoW-3 structured close-out written by the previous
+///   step into a `HANDOVER[<nonce>]` sentinel.
+/// - `qa_answer` — SoW-2 AI- or human-supplied answer that resumed the
+///   task from a `*_review` state back into this step. When present,
+///   the prompt builder prepends it so the agent doesn't re-ask.
+#[derive(Debug, Clone, Default)]
+pub struct PreviousStepContext {
+    pub from_step: Option<String>,
+    pub handover: Option<String>,
+    pub qa_answer: Option<String>,
+}
+
+impl PreviousStepContext {
+    /// True when none of the three fields carries content.
+    pub fn is_empty(&self) -> bool {
+        self.from_step.is_none() && self.handover.is_none() && self.qa_answer.is_none()
+    }
+}
+
 /// Context about the task being executed.
 #[derive(Debug, Clone)]
 pub struct TaskContext {
@@ -62,8 +87,8 @@ pub struct TaskContext {
     pub project_id: String,
     /// Serialised project context (JSON string).
     pub project_context: String,
-    /// Output from the previous step, if any.
-    pub previous_step_output: Option<String>,
+    /// Structured context inherited from the previous step (SoW-2/3).
+    pub previous_step: Option<PreviousStepContext>,
     /// Working directory (git worktree path). Required by Claude Code provider.
     pub working_dir: Option<PathBuf>,
     /// Log file path for PTY recording. Required by Claude Code provider.
@@ -123,6 +148,25 @@ pub trait StepProvider: Send + Sync {
         task: &TaskContext,
         config: &ProviderConfig,
     ) -> anyhow::Result<StepOutput>;
+
+    /// SoW-2: a single-turn, tool-less, non-streaming chat call used by
+    /// the AI responder loop to auto-answer agent QA items.
+    ///
+    /// Implementations send `prompt` as a single user message (no system
+    /// prompt, no tools, no agentic loop) and return the assistant's
+    /// reply text. The default impl rejects with a clear error so
+    /// providers that haven't opted in (claude-code excepted) don't get
+    /// silently chosen as responder backends.
+    async fn chat_once(&self, _prompt: &str, _config: &ProviderConfig) -> anyhow::Result<String> {
+        Err(anyhow::anyhow!(
+            "chat_once not implemented for this provider"
+        ))
+    }
+
+    /// Stable, lowercase provider name used in error messages and logs.
+    fn name(&self) -> &'static str {
+        "unknown"
+    }
 }
 
 // ── Factory ─────────────────────────────────────────────────────────────────
@@ -225,7 +269,7 @@ mod tests {
             task_id: "test-task-id".into(),
             project_id: "test-project-id".into(),
             project_context: "{}".into(),
-            previous_step_output: None,
+            previous_step: None,
             working_dir: None,
             log_file: None,
             user_prompt: None,

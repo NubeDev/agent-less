@@ -1,5 +1,7 @@
 use crate::crypto::Dek;
 use crate::engine::prompt;
+use crate::engine::qa_config::{QaConfig, Responder, resolve_qa_config};
+use crate::engine::responder::{AcceptDecision, ProviderResponderRunner, auto_answer_qa};
 use crate::engine::step_profile::StepProfile;
 use crate::engine::task_source::TaskSource;
 use crate::git::WorktreeManager;
@@ -12,6 +14,7 @@ use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 /// Default allowed tools for implement/rework steps (full access).
@@ -42,6 +45,23 @@ fn mint_sentinel_nonce() -> String {
 /// (the caller uses this to decide whether to log the
 /// agent-ignored-stop warning further upstream).
 ///
+/// One QA item created during this worker invocation. Returned by
+/// [`handle_qa_sentinels`] so the SoW-2 auto-answer loop can iterate
+/// freshly-posted items without a separate API roundtrip.
+#[derive(Debug, Clone)]
+pub(crate) struct PostedQaItem {
+    pub id: String,
+    pub prompt: String,
+    pub options: Option<Vec<String>>,
+}
+
+/// Parse QA sentinel blocks out of the agent's log and, if any are
+/// present, park the task in `ai_review` and persist each as a
+/// `task_qa_item` via the API. Returns the freshly-posted QA items
+/// (empty when no sentinel landed). The caller treats a non-empty
+/// vector as the SoW-1 "agent emitted a question" signal and uses the
+/// IDs to drive the SoW-2 auto-answer loop.
+///
 /// This is the SoW-1 enforcement boundary: a parsed QA always wins over
 /// the agent's diff or exit code. The agent cannot guess past a
 /// question by also producing speculative changes.
@@ -56,10 +76,11 @@ async fn handle_qa_sentinels(
     nonce: &str,
     has_changes: bool,
     is_error: bool,
-) -> bool {
+    qa_cfg: &QaConfig,
+) -> Vec<PostedQaItem> {
     let parsed = crate::providers::sentinel::parse(log_text, nonce);
     if parsed.questions.is_empty() {
-        return false;
+        return Vec::new();
     }
     warn!(
         "worker {tid}: agent emitted {} QA sentinel(s) — parking task in ai_review",
@@ -81,16 +102,50 @@ async fn handle_qa_sentinels(
              (continuing to record qa items)"
         );
     }
+
+    // Persist responder + expires_at_secs so the timeout sweeper has
+    // what it needs. AI-targeted items get the configured TTL; human
+    // items intentionally do not (humans must answer, no auto-escalate).
+    let responder_str = match qa_cfg.responder {
+        Responder::Ai => "ai",
+        Responder::Human => "human",
+    };
+    let expires = match qa_cfg.responder {
+        Responder::Ai => Some(qa_cfg.expires_at_secs),
+        Responder::Human => None,
+    };
+
+    let mut posted = Vec::with_capacity(parsed.questions.len());
     for q in &parsed.questions {
         let opts_ref: Option<&[String]> = q.options.as_deref();
-        if let Err(e) = api
-            .post_qa_item(task_id, project_id, step_name, &q.prompt, opts_ref)
+        match api
+            .post_qa_item(
+                task_id,
+                project_id,
+                step_name,
+                &q.prompt,
+                opts_ref,
+                responder_str,
+                expires,
+            )
             .await
         {
-            warn!("worker {tid}: failed to post qa item: {e:#}");
+            Ok(v) => {
+                let id = v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                posted.push(PostedQaItem {
+                    id,
+                    prompt: q.prompt.clone(),
+                    options: q.options.clone(),
+                });
+            }
+            Err(e) => warn!("worker {tid}: failed to post qa item: {e:#}"),
         }
     }
-    true
+    posted
 }
 
 /// Persist any `HANDOVER[<nonce>]` blocks found in the agent's log as
@@ -344,6 +399,17 @@ pub async fn run_worker(
     )
     .await;
 
+    // Resolve per-step QA policy once, up front. Defaults to the
+    // human-only pre-SoW-2 behaviour for steps with no `qa:` block.
+    let qa_cfg = resolve_qa_config(&step_config.step_name, step_config.step_json.as_ref())
+        .unwrap_or_else(|e| {
+            warn!(
+                "worker {tid}: invalid qa_config for step '{}': {e} — falling back to human default",
+                step_config.step_name
+            );
+            QaConfig::human_default()
+        });
+
     // Ensure log directory exists
     tokio::fs::create_dir_all(log_dir).await.ok();
 
@@ -432,10 +498,88 @@ pub async fn run_worker(
         &sentinel_nonce,
         has_changes,
         is_error,
+        &qa_cfg,
     )
     .await;
     // ──────────────────────────────────────────────────────────────────
-    let _ = sentinel_triggered;
+
+    // ── SoW-2: AI responder auto-answer loop ──────────────────────────
+    // For each freshly-posted QA item, if the resolved qa_config opts
+    // into Responder::Ai, run the responder (claude-code chat_once)
+    // and try to accept-check the answer. On Accept: submit via
+    // answer_qa_item, which transitions the task back into the
+    // originating step. On Escalate: leave the task parked in
+    // ai_review and let the human path handle it (the sweeper does the
+    // same after `expires_at_secs` elapses for AI-targeted items the
+    // responder never came back on).
+    if !sentinel_triggered.is_empty() && qa_cfg.responder == Responder::Ai {
+        if qa_cfg.forced_second_pass {
+            info!(
+                "worker {tid}: qa_config upgraded confidence -> second_pass \
+                 for safety (merge / on_irreversible=human)"
+            );
+        }
+        // Build a single responder runner shared across all QAs from
+        // this step run. We deliberately reuse the step's provider so
+        // operators only configure one model per step (and so cost
+        // attribution rolls up into the same task).
+        let runner_provider: Arc<dyn crate::providers::StepProvider> =
+            Arc::from(ProviderFactory::create("claude-code").expect("claude-code provider"));
+        let runner_cfg = ProviderCfg {
+            api_key: None,
+            base_url: None,
+            // Use the step's model if set; otherwise let chat_once pick
+            // the CLI default. Keeping the responder model close to the
+            // step's model means answers stay in the same idiom.
+            model: step_config.model.clone(),
+        };
+        let runner = ProviderResponderRunner::new(runner_provider, runner_cfg);
+
+        for posted in &sentinel_triggered {
+            let opts_ref = posted.options.as_deref();
+            match auto_answer_qa(&runner, &qa_cfg, &posted.prompt, opts_ref).await {
+                Ok(AcceptDecision::Accept { answer, rationale }) => {
+                    info!(
+                        "worker {tid}: AI responder accepted QA {} ({rationale})",
+                        posted.id
+                    );
+                    if let Err(e) = api
+                        .answer_qa_item(&posted.id, &answer, &step_config.step_name)
+                        .await
+                    {
+                        warn!(
+                            "worker {tid}: failed to submit AI answer for QA {}: {e:#}",
+                            posted.id
+                        );
+                    }
+                }
+                Ok(AcceptDecision::Escalate { reason }) => {
+                    info!(
+                        "worker {tid}: AI responder escalated QA {} to human ({reason})",
+                        posted.id
+                    );
+                    if let Err(e) = api
+                        .post_task_update(
+                            task_id,
+                            "note",
+                            &format!("AI responder escalated QA {}: {reason}", posted.id),
+                        )
+                        .await
+                    {
+                        warn!("worker {tid}: failed to log AI escalation: {e:#}");
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "worker {tid}: AI responder errored on QA {}: {e:#} \
+                         (leaving parked for human)",
+                        posted.id
+                    );
+                }
+            }
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────
 
     // ── SoW-3 handover persistence ────────────────────────────────────
     // Independent of QA handling: even when the agent finished cleanly
@@ -780,7 +924,7 @@ async fn execute_via_provider(
         task_id: task_id.to_string(),
         project_id: project_id.to_string(),
         project_context: user_prompt.to_string(),
-        previous_step_output: None,
+        previous_step: None,
         working_dir: Some(worktree_path.to_path_buf()),
         log_file: Some(log_file.to_path_buf()),
         user_prompt: None,
@@ -1406,7 +1550,7 @@ mod tests {
         let log = format!(
             "some preamble\nDIRAIGENT_QA[{nonce}]: which db?\nDIRAIGENT_QA_OPTIONS[{nonce}]: pg|sqlite\nDIRAIGENT_QA_END[{nonce}]\nbye\n"
         );
-        let triggered = handle_qa_sentinels(
+        let posted = handle_qa_sentinels(
             &api,
             &tid,
             "task-1",
@@ -1416,9 +1560,10 @@ mod tests {
             nonce,
             /* has_changes */ false,
             /* is_error */ true,
+            &QaConfig::human_default(),
         )
         .await;
-        assert!(triggered, "sentinel should trigger");
+        assert!(!posted.is_empty(), "sentinel should trigger");
     }
 
     #[tokio::test]
@@ -1431,7 +1576,7 @@ mod tests {
         let tid = TaskId::new("task-1");
         let nonce = "deadbeef";
         let log = format!("did stuff\nDIRAIGENT_QA[{nonce}]: unsure\nDIRAIGENT_QA_END[{nonce}]\n");
-        let triggered = handle_qa_sentinels(
+        let posted = handle_qa_sentinels(
             &api,
             &tid,
             "task-1",
@@ -1441,9 +1586,10 @@ mod tests {
             nonce,
             /* has_changes */ true,
             /* is_error */ false,
+            &QaConfig::human_default(),
         )
         .await;
-        assert!(triggered);
+        assert!(!posted.is_empty());
     }
 
     #[tokio::test]
@@ -1456,7 +1602,7 @@ mod tests {
         let api = ProjectsApi::new(&server.uri(), "test-agent");
         let tid = TaskId::new("task-1");
         let log = "DIRAIGENT_QA[wrong]: pwned\nDIRAIGENT_QA_END[wrong]\n";
-        let triggered = handle_qa_sentinels(
+        let posted = handle_qa_sentinels(
             &api,
             &tid,
             "task-1",
@@ -1466,9 +1612,10 @@ mod tests {
             "right",
             false,
             true,
+            &QaConfig::human_default(),
         )
         .await;
-        assert!(!triggered, "wrong-nonce sentinel must not trigger");
+        assert!(posted.is_empty(), "wrong-nonce sentinel must not trigger");
     }
 
     #[tokio::test]
@@ -1492,7 +1639,7 @@ mod tests {
         let tid = TaskId::new("task-1");
         let nonce = "feedface";
         let log = format!("DIRAIGENT_QA[{nonce}]: q\nDIRAIGENT_QA_END[{nonce}]\n");
-        let triggered = handle_qa_sentinels(
+        let posted = handle_qa_sentinels(
             &api,
             &tid,
             "task-1",
@@ -1502,9 +1649,10 @@ mod tests {
             nonce,
             false,
             true,
+            &QaConfig::human_default(),
         )
         .await;
-        assert!(triggered);
+        assert!(!posted.is_empty());
         // wiremock verifies expect(1) on /qa on Drop.
     }
 

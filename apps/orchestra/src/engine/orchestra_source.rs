@@ -249,11 +249,21 @@ impl TaskSource for OrchestraTaskSource {
         step_name: &str,
         prompt: &str,
         options: Option<&[String]>,
+        responder: &str,
+        expires_at_secs: Option<u32>,
     ) -> Result<Value> {
         // Orchestra-source delegates to the upstream API: the QA loop
         // (SoW-1) is rendered server-side and surfaced over SSE.
         self.api
-            .post_qa_item(task_id, project_id, step_name, prompt, options)
+            .post_qa_item(
+                task_id,
+                project_id,
+                step_name,
+                prompt,
+                options,
+                responder,
+                expires_at_secs,
+            )
             .await
     }
 

@@ -276,7 +276,7 @@ mod tests {
             task_id: "test-task-id".into(),
             project_id: "test-project-id".into(),
             project_context: r#"{"task": "do something"}"#.into(),
-            previous_step_output: None,
+            previous_step: None,
             working_dir: None,
             log_file: None,
             user_prompt: None,

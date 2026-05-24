@@ -94,7 +94,8 @@ impl StepProvider for CopilotProvider {
                 "task_id": task.task_id,
                 "project_id": task.project_id,
                 "project_context": task.project_context,
-                "previous_step_output": task.previous_step_output,
+                "previous_step_output": task.previous_step.as_ref().and_then(|p| p.handover.as_deref()),
+                "qa_answer": task.previous_step.as_ref().and_then(|p| p.qa_answer.as_deref()),
             })
             .to_string()
         };
@@ -303,7 +304,7 @@ mod tests {
             task_id: "task-123".into(),
             project_id: "proj-456".into(),
             project_context: r#"{"spec":"do stuff"}"#.into(),
-            previous_step_output: None,
+            previous_step: None,
             working_dir: None,
             log_file: None,
             user_prompt: None,
