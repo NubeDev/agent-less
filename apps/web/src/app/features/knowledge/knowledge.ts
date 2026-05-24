@@ -47,6 +47,17 @@ import { FilterBarComponent } from '../../shared/components/filter-bar/filter-ba
             <option [value]="tag">{{ tag }}</option>
           }
         </select>
+        <input
+          type="text"
+          [(ngModel)]="taskFilter"
+          placeholder="task id or #number"
+          class="bg-surface text-text-primary text-sm rounded-lg px-3 py-2 border border-border
+                 focus:outline-none focus:ring-1 focus:ring-accent w-44" />
+        <label class="flex items-center gap-1.5 text-xs text-text-secondary cursor-pointer">
+          <input type="checkbox" [(ngModel)]="aiOnly"
+            class="rounded border-border bg-surface text-accent focus:ring-1 focus:ring-accent" />
+          AI-created only
+        </label>
       </app-filter-bar>
 
       <!-- Content: accordion list -->
@@ -179,6 +190,8 @@ export class KnowledgePage extends CrudFeatureBase<SpKnowledge> {
 
   selectedCategory = '';
   selectedTag = '';
+  taskFilter = '';
+  aiOnly = false;
 
   formTitle = '';
   formCategory: KnowledgeCategory = 'general';
@@ -195,10 +208,27 @@ export class KnowledgePage extends CrudFeatureBase<SpKnowledge> {
 
   filtered = computed(() => {
     const q = this.searchQuery().toLowerCase().trim();
-    if (!q) return this.items();
-    return this.items().filter(
-      item => item.title.toLowerCase().includes(q) || item.content.toLowerCase().includes(q),
-    );
+    const tf = this.taskFilter.trim().replace(/^#/, '').toLowerCase();
+    const ai = this.aiOnly;
+    return this.items().filter(item => {
+      if (q && !(item.title.toLowerCase().includes(q) || item.content.toLowerCase().includes(q))) return false;
+      if (tf) {
+        const md = item.metadata as Record<string, unknown>;
+        const tid = String(md?.['task_id'] ?? '').toLowerCase();
+        const tnum = String(md?.['task_number'] ?? '').toLowerCase();
+        if (!tid.includes(tf) && tnum !== tf) return false;
+      }
+      if (ai) {
+        const md = item.metadata as Record<string, unknown>;
+        const created = item.created_by ?? '';
+        const isAi = md?.['created_by_ai'] === true
+          || md?.['source'] === 'agent'
+          || created.startsWith('agent:')
+          || created.startsWith('ai:');
+        if (!isAi) return false;
+      }
+      return true;
+    });
   });
 
   override loadItems(): void {
