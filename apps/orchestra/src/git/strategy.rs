@@ -244,13 +244,12 @@ pub async fn resolve_strategy(
     };
 
     let metadata = &playbook.metadata;
-    let work_branch = if metadata.get("git_strategy").and_then(|v| v.as_str())
-        == Some("feature_branch")
-    {
-        resolve_work_branch(api, task).await
-    } else {
-        None
-    };
+    let work_branch =
+        if metadata.get("git_strategy").and_then(|v| v.as_str()) == Some("feature_branch") {
+            resolve_work_branch(api, task).await
+        } else {
+            None
+        };
 
     GitStrategy::from_playbook_metadata(metadata, project_git_mode, work_branch)
 }

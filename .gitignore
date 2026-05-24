@@ -34,3 +34,4 @@ data/
 .analyzer-sync-cache.json
 
 secrets
+.orchestra.pid

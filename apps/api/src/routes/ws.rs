@@ -97,7 +97,11 @@ async fn handle_socket(state: AppState, agent_id: Uuid, socket: WebSocket) {
                     } => {
                         state.ws_registry.complete_playbook_request(
                             &request_id,
-                            PlaybookResponsePayload { success, error, data },
+                            PlaybookResponsePayload {
+                                success,
+                                error,
+                                data,
+                            },
                         );
                     }
                     WsMessage::Heartbeat => {

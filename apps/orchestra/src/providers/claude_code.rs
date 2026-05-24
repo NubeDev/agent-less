@@ -1,9 +1,25 @@
 //! Claude Code CLI provider — wraps the Claude Code CLI subprocess.
 //!
-//! Spawns `claude -p` in a PTY via `script`, reads the stream-json log file
-//! for cost/token metrics, and returns a [`StepOutput`] with full telemetry.
+//! Spawns `claude -p` directly (no PTY, no shell wrapper), feeds the user
+//! prompt on stdin, and tees the stream-json stdout into the task log file
+//! for cost/token metrics. Returns a [`StepOutput`] with full telemetry.
 //!
 //! Registered as both `"claude-code"` (canonical) and `"anthropic"` (legacy alias).
+//!
+//! ## Why no `script(1)`/PTY?
+//!
+//! An earlier version wrapped `claude` in `script -q` to fake a TTY,
+//! intending to force Node.js line-buffered output. In practice:
+//!
+//! * `--output-format stream-json` already emits one JSON object per line
+//!   and flushes per event, so a PTY adds nothing.
+//! * When orchestra runs under `nohup` / no controlling TTY (the common
+//!   production case), `script` silently degrades — it logs
+//!   `<not executed on terminal>`, the child claude exits ~2s later with
+//!   no diagnostics on stdout/stderr, and the PTY log is empty.
+//!
+//! Spawning `claude` directly matches the working pattern used by
+//! `starter-ai/runners/claude.rs` and avoids both issues.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -12,11 +28,9 @@ use std::process::Stdio;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tracing::{error, warn};
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 use super::{ProviderConfig, ResolvedStep, StepOutput, StepProvider, TaskContext};
 
@@ -68,7 +82,8 @@ async fn run_claude(
     log_file: &Path,
     config: &ResolvedStep,
 ) -> anyhow::Result<()> {
-    // Write prompts to temp files to avoid OS ARG_MAX limits.
+    // Temp dir holds MCP config (if any). Prompts go directly on argv /
+    // stdin, no shell quoting required.
     let temp_name = log_file
         .file_stem()
         .and_then(|s| s.to_str())
@@ -76,132 +91,125 @@ async fn run_claude(
     let temp_dir = std::env::temp_dir().join(format!("claude-{temp_name}"));
     tokio::fs::create_dir_all(&temp_dir)
         .await
-        .context("create temp dir for prompts")?;
+        .context("create temp dir")?;
 
-    let prompt_file = temp_dir.join("prompt.txt");
-    let system_file = temp_dir.join("system.txt");
-    tokio::fs::write(&prompt_file, user_prompt)
-        .await
-        .context("write user prompt to temp file")?;
-    tokio::fs::write(&system_file, system_prompt)
-        .await
-        .context("write system prompt to temp file")?;
+    // Build argv. No shell, no quoting — every value is its own argv slot.
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        "--system-prompt".into(),
+        system_prompt.to_string(),
+        "--no-session-persistence".into(),
+        "--dangerously-skip-permissions".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+    ];
 
-    // Build --allowedTools flags
-    let mut tool_flags = String::new();
-    for tool in &config.allowed_tools_list {
-        tool_flags.push_str(&format!(" --allowedTools '{tool}'"));
+    if let Some(m) = &config.model {
+        args.push("--model".into());
+        args.push(m.clone());
     }
-
-    let model_flag = config
-        .model
-        .as_deref()
-        .map(|m| format!(" --model '{m}'"))
-        .unwrap_or_default();
-
-    let budget_flag = config
-        .budget
-        .map(|b| format!(" --max-budget-usd {b:.1}"))
-        .unwrap_or_default();
-
-    // Write MCP config to a temp file if specified.
-    let mcp_flag = if let Some(mcp) = &config.mcp_servers {
+    if let Some(b) = config.budget {
+        args.push("--max-budget-usd".into());
+        args.push(format!("{b:.1}"));
+    }
+    for tool in &config.allowed_tools_list {
+        args.push("--allowedTools".into());
+        args.push(tool.clone());
+    }
+    if let Some(mcp) = &config.mcp_servers {
         let mcp_file = temp_dir.join("mcp_config.json");
         let mcp_json = serde_json::to_string_pretty(mcp).unwrap_or_default();
         tokio::fs::write(&mcp_file, &mcp_json)
             .await
-            .context("write MCP config to temp file")?;
-        format!(" --mcp-config '{}'", mcp_file.display())
-    } else {
-        String::new()
-    };
+            .context("write MCP config")?;
+        args.push("--mcp-config".into());
+        args.push(mcp_file.to_string_lossy().into_owned());
+    }
+    if let Some(agents) = &config.agents {
+        args.push("--agents".into());
+        args.push(serde_json::to_string(agents).unwrap_or_default());
+    }
+    if let Some(agent) = &config.agent {
+        args.push("--agent".into());
+        args.push(agent.clone());
+    }
+    if let Some(settings) = &config.settings {
+        args.push("--settings".into());
+        args.push(serde_json::to_string(settings).unwrap_or_default());
+    }
 
-    // Pass custom sub-agents as --agents '<json>' if specified.
-    let agents_flag = if let Some(agents) = &config.agents {
-        let agents_str = serde_json::to_string(agents).unwrap_or_default();
-        let escaped = agents_str.replace('\'', "'\\''");
-        format!(" --agents '{escaped}'")
-    } else {
-        String::new()
-    };
+    // Pre-create/truncate the log file so the parser sees an empty file
+    // rather than ENOENT if claude exits before producing output.
+    tokio::fs::write(log_file, b"").await.ok();
 
-    // Activate a specific named agent via --agent <name> if specified.
-    let agent_flag = config
-        .agent
-        .as_deref()
-        .map(|a| format!(" --agent '{a}'"))
-        .unwrap_or_default();
-
-    // Pass additional settings as --settings '<json>'.
-    let settings_flag = if let Some(settings) = &config.settings {
-        let settings_str = serde_json::to_string(settings).unwrap_or_default();
-        let escaped = settings_str.replace('\'', "'\\''");
-        format!(" --settings '{escaped}'")
-    } else {
-        String::new()
-    };
-
-    // Create wrapper script that pipes the user prompt via stdin.
-    let wrapper_content = format!(
-        "#!/bin/bash\n\
-         SYSTEM=\"$(cat '{system}')\"\n\
-         cat '{prompt}' | exec claude -p \\\n\
-           --system-prompt \"$SYSTEM\" \\\n\
-           --no-session-persistence \\\n\
-           --dangerously-skip-permissions \\\n\
-           --output-format stream-json \\\n\
-           --verbose{model}{budget}{tools}{mcp}{agents}{agent}{settings}\n",
-        system = system_file.display(),
-        prompt = prompt_file.display(),
-        model = model_flag,
-        budget = budget_flag,
-        tools = tool_flags,
-        mcp = mcp_flag,
-        agents = agents_flag,
-        agent = agent_flag,
-        settings = settings_flag,
-    );
-
-    let wrapper_path = temp_dir.join("run.sh");
-    tokio::fs::write(&wrapper_path, &wrapper_content)
-        .await
-        .context("write wrapper script")?;
-
-    #[cfg(unix)]
-    std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))
-        .context("set wrapper script permissions")?;
-
-    // `script` wraps claude in a PTY for proper Node.js output flushing.
-    let log_path = log_file.to_str().unwrap();
-    let wrapper_str = wrapper_path.to_str().unwrap();
-
-    let script_args = if cfg!(target_os = "macos") {
-        vec![
-            "-q".to_string(),
-            log_path.to_string(),
-            "bash".to_string(),
-            wrapper_str.to_string(),
-        ]
-    } else {
-        vec![
-            "-q".to_string(),
-            "-c".to_string(),
-            format!("bash {wrapper_str}"),
-            log_path.to_string(),
-        ]
-    };
-
-    let mut child = Command::new("script")
-        .args(&script_args)
+    let mut child = Command::new("claude")
+        .args(&args)
         .current_dir(worktree)
+        // CLAUDECODE is set by the parent claude session (when orchestra
+        // itself was launched from inside claude); clearing it prevents
+        // the child from inheriting/confusing the outer session.
         .env_remove("CLAUDECODE")
         .envs(config.env.iter())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
-        .context("spawn script/claude process")?;
+        .context("spawn claude process")?;
+
+    // Feed the prompt on stdin and close it so claude knows input is done.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(user_prompt.as_bytes())
+            .await
+            .context("write prompt to claude stdin")?;
+        stdin.shutdown().await.ok();
+    }
+
+    // Tee stdout to the log file, line by line. The downstream parser
+    // only looks at the final `"type":"result"` line, so we just append.
+    let stdout = child.stdout.take().context("claude stdout missing")?;
+    let stderr = child.stderr.take().context("claude stderr missing")?;
+    let log_path = log_file.to_path_buf();
+    let stdout_task = tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        let mut file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .await
+        {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("open claude log {}: {e}", log_path.display());
+                return;
+            }
+        };
+        while let Ok(Some(line)) = reader.next_line().await {
+            if file.write_all(line.as_bytes()).await.is_err() {
+                break;
+            }
+            let _ = file.write_all(b"\n").await;
+        }
+        let _ = file.flush().await;
+    });
+
+    // Capture stderr to a sibling file so failures are diagnosable.
+    let stderr_path = temp_dir.join("stderr.log");
+    let stderr_task = tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        let mut buf = String::new();
+        while let Ok(Some(line)) = reader.next_line().await {
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        let _ = tokio::fs::write(&stderr_path, buf).await;
+    });
 
     let status = child.wait().await.context("wait for claude process")?;
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
 
     // Clean up temp files (best-effort)
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;

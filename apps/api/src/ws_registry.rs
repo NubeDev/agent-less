@@ -106,11 +106,7 @@ impl WsRegistry {
     }
 
     /// Complete a pending playbook request with a response.
-    pub fn complete_playbook_request(
-        &self,
-        request_id: &str,
-        response: PlaybookResponsePayload,
-    ) {
+    pub fn complete_playbook_request(&self, request_id: &str, response: PlaybookResponsePayload) {
         if let Some((_, tx)) = self.pending_playbook.remove(request_id) {
             let _ = tx.send(response);
         }

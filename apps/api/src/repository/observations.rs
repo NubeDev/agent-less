@@ -131,7 +131,11 @@ pub async fn promote_observation(
         .playbook_name
         .clone()
         .or_else(|| project.default_playbook_name.clone());
-    let initial_state = if playbook_name.is_some() { "ready" } else { "backlog" };
+    let initial_state = if playbook_name.is_some() {
+        "ready"
+    } else {
+        "backlog"
+    };
     let context = serde_json::Value::Object(Default::default());
     let capabilities: Vec<String> = vec![];
     let success_criteria = serde_json::json!([]);

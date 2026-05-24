@@ -41,6 +41,17 @@ Diraigent is none of these. It's a structured, self-hosted platform where:
 
 ## Quickstart
 
+Two paths depending on what you want:
+
+- **Run everything from prebuilt containers (macOS)** — see below. The
+  `startup/start.sh` script reads Claude Code credentials from the macOS
+  Keychain via `security find-generic-password`, so it only works on macOS.
+- **Develop from source (Linux / macOS)** — see [LOCAL-DEV.md](LOCAL-DEV.md).
+  Uses `make start` to bring up Postgres + API + Web from this repo. Linux
+  users should start here.
+
+### macOS container quickstart
+
 Prerequisites: Docker, Docker Compose, and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) authenticated (`claude login`).
 
 ```bash
@@ -88,6 +99,8 @@ Without credentials, agents can still work locally but push/merge to the remote 
 
 ## Architecture
 
+Container/compose ports (defaults shipped in `startup/docker-compose.yml`):
+
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │  Web (4200) │────▶│  API (8082) │◀────│  Orchestra  │
@@ -99,6 +112,10 @@ Without credentials, agents can still work locally but push/merge to the remote 
                     │    (5433)   │
                     └─────────────┘
 ```
+
+The `make start` flow in [LOCAL-DEV.md](LOCAL-DEV.md) uses different host
+ports (Web `4280`, API `3100`, Postgres `5488`) to avoid clashing with
+anything you might already have running locally.
 
 | Component | Description |
 |-----------|-------------|
@@ -116,11 +133,12 @@ Tasks advance through playbook steps automatically. Each step is a full claim �
 ```
 backlog → ready → <step_name> → done
                              ↘ cancelled
-done → ready (pipeline advance to next step)
-done → human_review → done | ready | backlog
+              ↘ wait:<next_step> → <next_step>      (pipeline advance)
+done → human_review → done | ready | cancelled | wait:<next>
+done → backlog                                       (manual reopen)
 ```
 
-Step names come from the task's playbook (e.g. `implement`, `review`, `dream`). Tasks carry structured context: `spec`, `files`, `test_cmd`, `acceptance_criteria`, `notes`. Transitions are validated — agents can't skip steps.
+Step names come from the task's playbook (e.g. `implement`, `review`, `dream`). Tasks carry structured context: `spec`, `files`, `test_cmd`, `acceptance_criteria`, `notes`. Transitions are validated by [state_machine.rs](libs/common-rust/diraigent-types/src/state_machine.rs) — agents can't skip steps.
 
 ### Playbooks
 

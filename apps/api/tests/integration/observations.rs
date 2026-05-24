@@ -24,7 +24,12 @@ async fn promote_observation_inherits_default_playbook_name() {
             }),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "create observation: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "create observation: {}",
+        resp.json
+    );
     let obs_id = resp.json["id"].as_str().unwrap().to_string();
 
     let resp = app
@@ -33,7 +38,12 @@ async fn promote_observation_inherits_default_playbook_name() {
             serde_json::json!({}),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "promote observation: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "promote observation: {}",
+        resp.json
+    );
 
     let task = &resp.json["task"];
     let observation = &resp.json["observation"];
@@ -69,7 +79,12 @@ async fn promote_observation_with_explicit_playbook_name_override() {
             }),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "create observation: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "create observation: {}",
+        resp.json
+    );
     let obs_id = resp.json["id"].as_str().unwrap().to_string();
 
     let resp = app
@@ -78,7 +93,12 @@ async fn promote_observation_with_explicit_playbook_name_override() {
             serde_json::json!({ "playbook_name": "research" }),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "promote with override: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "promote with override: {}",
+        resp.json
+    );
 
     let task = &resp.json["task"];
     assert_eq!(task["playbook_name"].as_str().unwrap(), "research");
@@ -102,7 +122,12 @@ async fn promote_observation_without_any_playbook_starts_backlog() {
             }),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "create observation: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "create observation: {}",
+        resp.json
+    );
     let obs_id = resp.json["id"].as_str().unwrap().to_string();
 
     let resp = app
@@ -111,7 +136,12 @@ async fn promote_observation_without_any_playbook_starts_backlog() {
             serde_json::json!({}),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "promote observation: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "promote observation: {}",
+        resp.json
+    );
 
     let task = &resp.json["task"];
     assert_eq!(task["state"].as_str().unwrap(), "backlog");
@@ -136,7 +166,12 @@ async fn promote_observation_twice_is_conflict() {
             }),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::OK, "create observation: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::OK,
+        "create observation: {}",
+        resp.json
+    );
     let obs_id = resp.json["id"].as_str().unwrap().to_string();
 
     let resp = app
@@ -153,7 +188,12 @@ async fn promote_observation_twice_is_conflict() {
             serde_json::json!({}),
         ))
         .await;
-    assert_eq!(resp.status, StatusCode::CONFLICT, "second promote: {}", resp.json);
+    assert_eq!(
+        resp.status,
+        StatusCode::CONFLICT,
+        "second promote: {}",
+        resp.json
+    );
 
     app.cleanup().await;
 }

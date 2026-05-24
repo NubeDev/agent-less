@@ -4,8 +4,21 @@
 -- is UNIQUE(tenant_id, agent_id, role_id) so each tenant has independent
 -- membership records.
 
-ALTER TABLE diraigent.membership
-  DROP CONSTRAINT membership_agent_id_role_id_key;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'membership_agent_id_role_id_key'
+  ) THEN
+    ALTER TABLE diraigent.membership DROP CONSTRAINT membership_agent_id_role_id_key;
+  END IF;
+END $$;
 
-ALTER TABLE diraigent.membership
-  ADD CONSTRAINT membership_tenant_agent_role_key UNIQUE (tenant_id, agent_id, role_id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'membership_tenant_agent_role_key'
+  ) THEN
+    ALTER TABLE diraigent.membership
+      ADD CONSTRAINT membership_tenant_agent_role_key UNIQUE (tenant_id, agent_id, role_id);
+  END IF;
+END $$;

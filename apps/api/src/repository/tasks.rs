@@ -45,7 +45,11 @@ pub async fn create_task(
         .or_else(|| project.default_playbook_name.clone());
 
     // Tasks with a playbook start as "ready"; tasks without stay in "backlog".
-    let initial_state = if playbook_name.is_some() { "ready" } else { "backlog" };
+    let initial_state = if playbook_name.is_some() {
+        "ready"
+    } else {
+        "backlog"
+    };
 
     let task = sqlx::query_as::<_, Task>(
         "INSERT INTO diraigent.task (project_id, title, kind, state, urgent, context, required_capabilities, playbook_name, playbook_step, decision_id, created_by, file_scope, parent_id, state_entered_at)

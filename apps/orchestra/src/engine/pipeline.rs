@@ -363,8 +363,7 @@ async fn resolve_step_template(api: &dyn TaskSource, step: &Value) -> Value {
 }
 
 /// Repo playbooks are the source of truth now, so there is nothing to sync.
-pub async fn sync_project_playbooks(_api: &dyn TaskSource, _repo_root: &std::path::Path) {
-}
+pub async fn sync_project_playbooks(_api: &dyn TaskSource, _repo_root: &std::path::Path) {}
 
 /// Sync repo-based decisions (ADRs) to the API for a given project.
 ///

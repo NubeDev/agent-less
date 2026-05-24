@@ -26,13 +26,12 @@ async fn proxy_playbook(
     name: Option<String>,
     content: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
-    let agent_ids = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM diraigent.agent WHERE project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let agent_ids =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM diraigent.agent WHERE project_id = $1")
+            .bind(project_id)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
 
     let agent_id = state
         .ws_registry
@@ -42,7 +41,9 @@ async fn proxy_playbook(
         })?;
 
     let request_id = Uuid::new_v4().to_string();
-    let rx = state.ws_registry.register_playbook_request(request_id.clone());
+    let rx = state
+        .ws_registry
+        .register_playbook_request(request_id.clone());
 
     let sent = state.ws_registry.send_to_agent(
         agent_id,
@@ -56,7 +57,9 @@ async fn proxy_playbook(
     );
 
     if !sent {
-        return Err(AppError::ServiceUnavailable("Orchestra disconnected".into()));
+        return Err(AppError::ServiceUnavailable(
+            "Orchestra disconnected".into(),
+        ));
     }
 
     let payload = tokio::time::timeout(Duration::from_secs(10), rx)

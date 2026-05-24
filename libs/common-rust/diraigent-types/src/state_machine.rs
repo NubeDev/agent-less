@@ -15,6 +15,16 @@ pub fn is_wait_state(s: &str) -> bool {
     s.starts_with("wait:")
 }
 
+/// Returns true if the state is a review state (`ai_review` or `human_review`).
+///
+/// Review states are an escape hatch from a running step: a step can transition
+/// into a review state to park the task while a question is answered (by an AI
+/// responder or a human). Resolving the review transitions the task back to a
+/// named step (or escalates to the other review state, or cancels).
+pub fn is_review_state(s: &str) -> bool {
+    matches!(s, "ai_review" | "human_review")
+}
+
 /// Extract the next step name from a `wait:<step>` state.
 pub fn wait_target(s: &str) -> Option<&str> {
     s.strip_prefix("wait:")
@@ -29,6 +39,11 @@ pub fn wait_target(s: &str) -> Option<&str> {
 ///   wait:<s>   → <s> (via claim), cancelled
 ///   done       → backlog, human_review
 ///   cancelled  → backlog
+///   human_review → done, ready, backlog, cancelled, ai_review (escalate),
+///                  or any named step (resume after answer)
+///   ai_review    → cancelled, human_review (escalate), or any named step
+///                  (resume after answer). Cannot go directly to a lifecycle
+///                  state like `done` — must resume a step or escalate first.
 /// ```
 pub fn can_transition(current: &str, target: &str) -> bool {
     match current {
@@ -47,10 +62,31 @@ pub fn can_transition(current: &str, target: &str) -> bool {
             let next = wait_target(current).unwrap_or("");
             target == next || target == "cancelled"
         }
+        "human_review" => {
+            // Existing post-done review surface: approve (→done), rework
+            // (→ready), reopen (→backlog), cancel, escalate (→ai_review),
+            // or resume any named step with the answer.
+            matches!(
+                target,
+                "done" | "ready" | "backlog" | "cancelled" | "ai_review"
+            ) || (!is_lifecycle_state(target) && !is_review_state(target))
+        }
+        "ai_review" => {
+            // AI review resolves via resume-to-step, escalate to human, or
+            // cancel. Direct transitions to lifecycle states (done/ready/
+            // backlog/wait:*) are forbidden — the answer must drive the next
+            // step or escalation explicitly.
+            target == "cancelled"
+                || target == "human_review"
+                || (!is_lifecycle_state(target) && !is_review_state(target))
+        }
         _ => {
-            // Current state is a step name (e.g. implement, review, human_review)
-            // Can go to done (final), wait:<next> (pipeline), ready (release), or cancelled
-            matches!(target, "done" | "ready" | "cancelled") || is_wait_state(target)
+            // Current state is a step name (e.g. implement, review).
+            // Can go to done (final), wait:<next> (pipeline), ready (release),
+            // a review state (park for QA), or cancelled.
+            matches!(target, "done" | "ready" | "cancelled")
+                || is_wait_state(target)
+                || is_review_state(target)
         }
     }
 }
@@ -123,5 +159,55 @@ mod tests {
         // cancelled
         assert!(can_transition("cancelled", "backlog"));
         assert!(!can_transition("cancelled", "ready"));
+    }
+
+    #[test]
+    fn review_state_predicate() {
+        assert!(is_review_state("ai_review"));
+        assert!(is_review_state("human_review"));
+        assert!(!is_review_state("implement"));
+        assert!(!is_review_state("done"));
+        assert!(!is_review_state("ready"));
+    }
+
+    #[test]
+    fn step_to_review_transitions() {
+        // Any step can park into either review state.
+        assert!(can_transition("implement", "ai_review"));
+        assert!(can_transition("implement", "human_review"));
+        assert!(can_transition("review", "ai_review"));
+        assert!(can_transition("merge", "human_review"));
+    }
+
+    #[test]
+    fn ai_review_transitions() {
+        // Resume any named step.
+        assert!(can_transition("ai_review", "implement"));
+        assert!(can_transition("ai_review", "review"));
+        // Escalate to human.
+        assert!(can_transition("ai_review", "human_review"));
+        // Cancel.
+        assert!(can_transition("ai_review", "cancelled"));
+        // Forbidden: direct to lifecycle states. Review only resolves via
+        // resume-to-step or escalation.
+        assert!(!can_transition("ai_review", "done"));
+        assert!(!can_transition("ai_review", "ready"));
+        assert!(!can_transition("ai_review", "backlog"));
+        assert!(!can_transition("ai_review", "wait:review"));
+    }
+
+    #[test]
+    fn human_review_transitions() {
+        // Existing post-done behaviour preserved.
+        assert!(can_transition("human_review", "done"));
+        assert!(can_transition("human_review", "ready"));
+        assert!(can_transition("human_review", "backlog"));
+        assert!(can_transition("human_review", "cancelled"));
+        // Resume any named step (e.g. after answering a QA item).
+        assert!(can_transition("human_review", "implement"));
+        // Escalate to/from ai_review.
+        assert!(can_transition("human_review", "ai_review"));
+        // Forbidden: cannot bypass via wait state.
+        assert!(!can_transition("human_review", "wait:review"));
     }
 }
