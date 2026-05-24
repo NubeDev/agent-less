@@ -393,7 +393,7 @@ export class AdvancedDetailPage implements OnInit, OnDestroy {
     }
     if (this.reports().length === 0) {
       try {
-        const rs = await firstValueFrom(this.reportsApi.list());
+        const rs = await firstValueFrom(this.reportsApi.list({ task_id: this.taskId }));
         this.reports.set(rs);
       } catch {
         /* best-effort */
