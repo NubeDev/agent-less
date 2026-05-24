@@ -1,4 +1,4 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import { forkJoin, of } from 'rxjs';
@@ -17,6 +17,7 @@ import {
   JobsApiService,
   TaskLogSummary,
 } from './jobs-api.service';
+import { TaskStreamEvent, TaskStreamService } from './task-stream.service';
 
 type NodeKind = 'task' | 'step' | 'qa' | 'report';
 
@@ -56,6 +57,17 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
     .node-rect.qa { fill: #1e1e2e; stroke: #f9e2af; }
     .node-rect.report { fill: #1e1e2e; stroke: #a6e3a1; }
     .node-rect.selected { stroke-width: 3; }
+    /* Live status colour overlay — applied via data-status to keep the
+       dagre layout stable (no DOM structure change on update). */
+    .node-rect[data-status="pending"] { fill: #1e1e2e; }
+    .node-rect[data-status="running"] { fill: #313244; stroke: #fab387; animation: node-pulse 1.4s ease-in-out infinite; }
+    .node-rect[data-status="done"] { fill: #1e1e2e; stroke: #a6e3a1; }
+    .node-rect[data-status="failed"] { fill: #2a1818; stroke: #f38ba8; }
+    .node-rect[data-status="qa-parked"] { fill: #2a2618; stroke: #f9e2af; }
+    @keyframes node-pulse {
+      0%, 100% { stroke-opacity: 1; stroke-width: 1.5; }
+      50% { stroke-opacity: 0.6; stroke-width: 3; }
+    }
     .node-label { fill: #cdd6f4; font-size: 12px; font-family: sans-serif; pointer-events: none; }
     .node-sub { fill: #6c7086; font-size: 10px; font-family: sans-serif; pointer-events: none; }
     .tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; border-bottom: 1px solid #313244; }
@@ -94,6 +106,8 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
                      [attr.data-node-kind]="node.kind">
                 <svg:rect
                   [class]="'node-rect ' + node.kind + (selectedId() === node.id ? ' selected' : '')"
+                  [attr.data-status]="nodeStatus(node)"
+                  [attr.data-testid-status]="nodeStatus(node)"
                   [attr.width]="node.dimension.width"
                   [attr.height]="node.dimension.height" />
                 <svg:text class="node-label" [attr.x]="10" [attr.y]="20">{{ node.label }}</svg:text>
@@ -175,9 +189,13 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
     }
   `,
 })
-export class JobTheatrePage implements OnInit {
+export class JobTheatrePage implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
   private api = inject(JobsApiService);
+  private stream = inject(TaskStreamService);
+
+  /** Closes the SSE EventSource on destroy. */
+  private streamUnsubscribe: (() => void) | null = null;
 
   layout = new DagreLayout();
   layoutSettings = { orientation: 'LR' as const, marginX: 24, marginY: 24, edgePadding: 80, rankPadding: 80, nodePadding: 32 };
@@ -423,7 +441,113 @@ export class JobTheatrePage implements OnInit {
       // Auto-select task node
       const t = this.task();
       if (t) this.selectNodeById('task:' + t.id);
+
+      // Subscribe to live updates. Node IDs are stable (task.id, step name,
+      // qa.id, report.id) so dagre positions are preserved across updates.
+      if (t) this.subscribeLive(t.id);
     });
+  }
+
+  ngOnDestroy(): void {
+    this.streamUnsubscribe?.();
+    this.streamUnsubscribe = null;
+  }
+
+  /** Resolve a live status string for a node from current signals. */
+  nodeStatus(node: JobNode): string {
+    if (node.kind === 'task') {
+      const state = (node.ref as { task: SpTask }).task.state;
+      // Map orchestra task states onto DAG status colours.
+      if (state === 'done') return 'done';
+      if (state === 'cancelled' || state === 'failed') return 'failed';
+      if (state === 'ai_review' || state === 'human_review') return 'qa-parked';
+      if (state === 'backlog' || state === 'ready') return 'pending';
+      return 'running'; // claimed / implement / review / etc.
+    }
+    if (node.kind === 'qa') {
+      const q = (node.ref as { qa: SpQaItem }).qa;
+      if (q.status === 'answered' || q.status === 'resolved') return 'done';
+      if (q.status === 'expired') return 'failed';
+      return 'qa-parked';
+    }
+    if (node.kind === 'report') {
+      const r = (node.ref as { report: SpReport }).report;
+      if (r.status === 'done' || r.status === 'completed') return 'done';
+      if (r.status === 'failed') return 'failed';
+      return 'pending';
+    }
+    if (node.kind === 'step') {
+      // Step nodes are inferred from logs; treat them as running while the
+      // owning task is mid-pipeline, otherwise done.
+      const task = this.task();
+      const taskRunning = !!task && task.state !== 'done' && task.state !== 'cancelled';
+      const steps = this.nodes().filter(n => n.kind === 'step');
+      const isLast = steps.length > 0 && steps[steps.length - 1].id === node.id;
+      return taskRunning && isLast ? 'running' : 'done';
+    }
+    return 'pending';
+  }
+
+  private subscribeLive(taskId: string): void {
+    const { events$, unsubscribe } = this.stream.connect(taskId);
+    this.streamUnsubscribe = unsubscribe;
+    events$.subscribe(ev => this.applyStreamEvent(taskId, ev));
+  }
+
+  private applyStreamEvent(taskId: string, ev: TaskStreamEvent): void {
+    switch (ev.kind) {
+      case 'task_updated': {
+        const cur = this.task();
+        if (cur && cur.id === ev.task_id) {
+          // Patch in place — keep the same task identity and node ID so
+          // ngx-graph reuses the existing dagre position (no reflow).
+          this.task.set({
+            ...cur,
+            state: ev.state,
+            playbook_step: ev.playbook_step ?? cur.playbook_step,
+            updated_at: ev.updated_at,
+            cost_usd: ev.cost_usd,
+            input_tokens: ev.input_tokens,
+            output_tokens: ev.output_tokens,
+          } as SpTask);
+        }
+        return;
+      }
+      case 'qa_updated': {
+        // Patch or append.
+        const list = this.qa();
+        const idx = list.findIndex(q => q.id === ev.qa_id);
+        if (idx >= 0) {
+          const next = list.slice();
+          next[idx] = { ...next[idx], status: ev.status };
+          this.qa.set(next);
+        } else {
+          // New QA — refetch the list to get the full row.
+          this.api.listQa(taskId).subscribe(rows => this.qa.set(rows));
+        }
+        return;
+      }
+      case 'report_updated': {
+        const list = this.reports();
+        const idx = list.findIndex(r => r.id === ev.report_id);
+        if (idx >= 0) {
+          const next = list.slice();
+          next[idx] = { ...next[idx], status: ev.status };
+          this.reports.set(next);
+        } else {
+          const t = this.task();
+          if (t) this.api.listReports(t.project_id, taskId).subscribe(rs => this.reports.set(rs));
+        }
+        return;
+      }
+      case 'log_added': {
+        const list = this.logs();
+        if (list.some(l => l.id === ev.log_id)) return;
+        const t = this.task();
+        if (t) this.api.listLogs(t.project_id, taskId).subscribe(ls => this.logs.set(ls));
+        return;
+      }
+    }
   }
 
   selectNode(node: JobNode): void {
