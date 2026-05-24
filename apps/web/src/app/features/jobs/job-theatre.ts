@@ -14,7 +14,10 @@ import { SpQaItem } from '../../core/services/qa-api.service';
 import { SpReport } from '../../core/services/reports-api.service';
 import { SpAuditEntry } from '../../core/services/audit-api.service';
 import {
+  ChangedFile,
+  ChangedFileSummary,
   JobsApiService,
+  StepFileGroup,
   TaskLogSummary,
 } from './jobs-api.service';
 import { TaskStreamEvent, TaskStreamService } from './task-stream.service';
@@ -31,7 +34,7 @@ interface JobNode extends Node {
     | { kind: 'report'; report: SpReport };
 }
 
-type DrawerTab = 'overview' | 'prompt' | 'output' | 'logs' | 'audit';
+type DrawerTab = 'overview' | 'prompt' | 'output' | 'logs' | 'audit' | 'files';
 
 interface SentinelBlock {
   tag: string;
@@ -46,7 +49,27 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
   imports: [NgxGraphModule, DatePipe],
   styles: [`
     :host { display: block; }
-    .theatre { display: grid; grid-template-columns: minmax(0, 1fr) 420px; height: calc(100vh - 4rem); }
+    .theatre { display: grid; grid-template-columns: minmax(0, 1fr) 420px; height: calc(100vh - 4rem); transition: grid-template-columns 0.2s ease; }
+    .theatre.diff-open { grid-template-columns: minmax(0, 1fr) 70%; }
+    .file-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; cursor: pointer; border-bottom: 1px solid #313244; font-size: 12px; }
+    .file-row:hover { background: #1e1e2e; }
+    .file-row.active { background: #313244; }
+    .file-status { display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 3px; font-family: monospace; font-weight: bold; font-size: 11px; }
+    .file-status.added { background: #1f3d2a; color: #a6e3a1; }
+    .file-status.modified { background: #3d3a1f; color: #f9e2af; }
+    .file-status.deleted { background: #3d1f1f; color: #f38ba8; }
+    .file-status.renamed { background: #1f2a3d; color: #89b4fa; }
+    .file-path { flex: 1; color: #cdd6f4; word-break: break-all; }
+    .step-section { margin-bottom: 0.75rem; }
+    .step-section-header { font-size: 11px; color: #cba6f7; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.5rem 0; }
+    .diff-overlay { padding: 0.75rem; background: #11111b; border-radius: 6px; max-height: 70vh; overflow: auto; font-family: monospace; font-size: 11px; line-height: 1.4; }
+    .diff-line { white-space: pre; }
+    .diff-line.add { background: #1f3d2a; color: #a6e3a1; }
+    .diff-line.del { background: #3d1f1f; color: #f38ba8; }
+    .diff-line.hunk { color: #89b4fa; }
+    .diff-line.ctx { color: #6c7086; }
+    .diff-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .diff-close { background: transparent; border: 1px solid #45475a; color: #cdd6f4; padding: 0.25rem 0.5rem; cursor: pointer; border-radius: 3px; font-size: 11px; }
     .graph-pane { background: var(--surface, #181825); border-right: 1px solid var(--border, #313244); position: relative; }
     .drawer { background: var(--surface, #181825); color: var(--text-primary, #cdd6f4); padding: 1rem; overflow: auto; }
     .empty { padding: 2rem; color: var(--text-muted, #6c7086); }
@@ -89,7 +112,7 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
     @if (!loaded()) {
       <div class="empty" data-testid="job-theatre-loading">Loading job theatre…</div>
     } @else {
-    <div class="theatre" data-testid="job-theatre">
+    <div class="theatre" [class.diff-open]="!!openDiff()" data-testid="job-theatre">
       <div class="graph-pane" data-testid="job-theatre-graph">
         @if (nodes().length === 0) {
           <div class="empty">No graph data for this task.</div>
@@ -167,6 +190,48 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
                 }
               }
             }
+            @case ('files') {
+              @if (openDiff(); as diff) {
+                <div class="diff-header">
+                  <div data-testid="diff-path"><strong>{{ diff.path }}</strong></div>
+                  <button class="diff-close" data-testid="diff-close" (click)="closeDiff()">Close diff</button>
+                </div>
+                @if (diff.diff) {
+                  <div class="diff-overlay" data-testid="diff-overlay">
+                    @for (l of diffLines(); track $index) {
+                      <div class="diff-line" [class.add]="l.kind === 'add'" [class.del]="l.kind === 'del'" [class.hunk]="l.kind === 'hunk'" [class.ctx]="l.kind === 'ctx'">{{ l.text }}</div>
+                    }
+                  </div>
+                } @else {
+                  <div class="empty">No diff content stored for this file.</div>
+                }
+              } @else {
+                @if (filesByStep().length === 0) {
+                  <div class="empty" data-testid="drawer-files-empty">No changed files for this task.</div>
+                } @else {
+                  @for (group of filesByStep(); track group.step_name) {
+                    @if (isFileGroupVisible(group)) {
+                      <div class="step-section" data-testid="files-step-section">
+                        <div class="step-section-header">{{ group.step_name }}</div>
+                        @for (f of group.files; track f.id) {
+                          <div class="file-row" data-testid="files-row"
+                               [class.active]="openFileId() === f.id"
+                               (click)="openFile(f)">
+                            <span class="file-status" [class.added]="f.change_type === 'added'"
+                                  [class.modified]="f.change_type === 'modified'"
+                                  [class.deleted]="f.change_type === 'deleted'"
+                                  [class.renamed]="f.change_type === 'renamed'"
+                                  [attr.data-testid]="'file-status-' + f.change_type"
+                                  [attr.title]="f.change_type">{{ statusLetter(f.change_type) }}</span>
+                            <span class="file-path">{{ f.path }}</span>
+                          </div>
+                        }
+                      </div>
+                    }
+                  }
+                }
+              }
+            }
             @case ('audit') {
               @if (selectedAudit().length === 0) {
                 <div class="empty">No audit entries.</div>
@@ -199,7 +264,7 @@ export class JobTheatrePage implements OnInit, OnDestroy {
 
   layout = new DagreLayout();
   layoutSettings = { orientation: 'LR' as const, marginX: 24, marginY: 24, edgePadding: 80, rankPadding: 80, nodePadding: 32 };
-  tabs: DrawerTab[] = ['overview', 'prompt', 'output', 'logs', 'audit'];
+  tabs: DrawerTab[] = ['overview', 'prompt', 'output', 'logs', 'files', 'audit'];
 
   loaded = signal(false);
   task = signal<SpTask | null>(null);
@@ -212,6 +277,12 @@ export class JobTheatrePage implements OnInit, OnDestroy {
 
   selectedId = signal<string | null>(null);
   activeTab = signal<DrawerTab>('overview');
+
+  /** All files grouped by step — fetched once on load. */
+  filesByStep = signal<StepFileGroup[]>([]);
+  /** Currently-open diff in the overlay (per-file). */
+  openDiff = signal<ChangedFile | null>(null);
+  openFileId = signal<string | null>(null);
 
   nodes = computed<JobNode[]>(() => {
     const out: JobNode[] = [];
@@ -430,13 +501,15 @@ export class JobTheatrePage implements OnInit, OnDestroy {
           qa: this.api.listQa(task.id).pipe(catchError(() => of([] as SpQaItem[]))),
           reports: this.api.listReports(task.project_id, task.id).pipe(catchError(() => of([] as SpReport[]))),
           audit: this.api.entityAudit('task', task.id).pipe(catchError(() => of([] as SpAuditEntry[]))),
+          files: this.api.filesByStep(task.id).pipe(catchError(() => of([] as StepFileGroup[]))),
         });
       }),
-    ).subscribe(({ logs, qa, reports, audit }) => {
+    ).subscribe(({ logs, qa, reports, audit, files }) => {
       this.logs.set(logs);
       this.qa.set(qa);
       this.reports.set(reports);
       this.audit.set(audit);
+      this.filesByStep.set(files);
       this.loaded.set(true);
       // Auto-select task node
       const t = this.task();
@@ -564,6 +637,55 @@ export class JobTheatrePage implements OnInit, OnDestroy {
       if (last && last !== sel.ref.logs[0]) this.ensureLogContent(last);
     }
   }
+
+  /** Visible if a node is selected: task -> all groups; step -> matching group only. */
+  isFileGroupVisible(group: StepFileGroup): boolean {
+    const sel = this.selected();
+    if (!sel) return true;
+    if (sel.ref.kind === 'task') return true;
+    if (sel.ref.kind === 'step') return group.step_name === sel.ref.step_name;
+    return true;
+  }
+
+  statusLetter(t: string): string {
+    switch (t) {
+      case 'added': return 'A';
+      case 'modified': return 'M';
+      case 'deleted': return 'D';
+      case 'renamed': return 'R';
+      default: return '?';
+    }
+  }
+
+  openFile(f: ChangedFileSummary): void {
+    this.openFileId.set(f.id);
+    this.api.getChangedFile(f.task_id, f.id).subscribe(full => {
+      // Only apply if it's still the same file the user wants open.
+      if (this.openFileId() === full.id) this.openDiff.set(full);
+    });
+  }
+
+  closeDiff(): void {
+    this.openDiff.set(null);
+    this.openFileId.set(null);
+  }
+
+  /** Classify diff lines for colouring. */
+  diffLines = computed<{ kind: 'add' | 'del' | 'hunk' | 'ctx' | 'meta'; text: string }[]>(() => {
+    const d = this.openDiff();
+    if (!d || !d.diff) return [];
+    const lines = d.diff.split('\n');
+    // Hard cap render to keep < 500ms even on pathological inputs.
+    const cap = 8000;
+    const sliced = lines.length > cap ? lines.slice(0, cap) : lines;
+    return sliced.map(text => {
+      if (text.startsWith('@@')) return { kind: 'hunk' as const, text };
+      if (text.startsWith('+++') || text.startsWith('---') || text.startsWith('diff ') || text.startsWith('index ')) return { kind: 'meta' as const, text };
+      if (text.startsWith('+')) return { kind: 'add' as const, text };
+      if (text.startsWith('-')) return { kind: 'del' as const, text };
+      return { kind: 'ctx' as const, text };
+    });
+  });
 
   private ensureLogContent(log: TaskLogSummary | undefined): void {
     if (!log) return;

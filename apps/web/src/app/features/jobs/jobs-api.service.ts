@@ -21,6 +21,23 @@ export interface TaskLog extends TaskLogSummary {
   content: string;
 }
 
+export interface ChangedFileSummary {
+  id: string;
+  task_id: string;
+  path: string;
+  change_type: string; // 'added' | 'modified' | 'deleted' | 'renamed'
+  created_at: string;
+}
+
+export interface ChangedFile extends ChangedFileSummary {
+  diff: string | null;
+}
+
+export interface StepFileGroup {
+  step_name: string;
+  files: ChangedFileSummary[];
+}
+
 /** Thin client for endpoints used by the Job Theatre post-mortem view. */
 @Injectable({ providedIn: 'root' })
 export class JobsApiService {
@@ -56,5 +73,13 @@ export class JobsApiService {
 
   entityAudit(entityType: string, entityId: string): Observable<SpAuditEntry[]> {
     return this.http.get<SpAuditEntry[]>(`${this.baseUrl}/audit/${entityType}/${entityId}`);
+  }
+
+  filesByStep(taskId: string): Observable<StepFileGroup[]> {
+    return this.http.get<StepFileGroup[]>(`${this.baseUrl}/tasks/${taskId}/files-by-step`);
+  }
+
+  getChangedFile(taskId: string, fileId: string): Observable<ChangedFile> {
+    return this.http.get<ChangedFile>(`${this.baseUrl}/tasks/${taskId}/changed-files/${fileId}`);
   }
 }
