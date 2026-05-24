@@ -23,63 +23,63 @@ Tick boxes as you land. Do not reorder without updating IMPROVEMENT.md.
 
 ---
 
-## SoW-1 — QA sentinel loop, human-only responder  ⬜ NEXT
+## SoW-1 — QA sentinel loop, human-only responder  ✅ DONE
 
 **One-line:** detect "agent needs a decision" post-exit, persist as structured
 QA item, route to a human via the existing review queue.
 
 ### Verify first
-- [ ] Read `apps/api/src/routes/sse.rs` end-to-end. Document whether new
+- [x] Read `apps/api/src/routes/sse.rs` end-to-end. Document whether new
   `task_updates` insertions are already broadcast in a shape the Angular
   review-queue client subscribes to. If not, SSE wiring is part of this SoW.
-- [ ] Confirm `task_updates.kind` enum contains `question`
+- [x] Confirm `task_updates.kind` enum contains `question`
   (`apps/api/migrations/001_schema.sql:343-352`).
-- [ ] Confirm
+- [x] Confirm
   [providers/claude_code.rs](apps/orchestra/src/providers/claude_code.rs)
   reads the per-task log file post-exit (around `claude_code.rs:55`) — this
   is the hook point for the sentinel parser.
 
 ### Build
-- [ ] Migration `047_task_qa_item.sql`: table with columns per
+- [x] Migration `047_task_qa_item.sql`: table with columns per
   [IMPROVEMENT.md §3 SoW-1 AC1](IMPROVEMENT.md). Tenant-scoped, FKs to task
   and project, indexes on `(task_id, status)` and `(status, expires_at)`.
-- [ ] `apps/api/src/repository/qa_items.rs` — CRUD mirroring
+- [x] `apps/api/src/repository/qa_items.rs` — CRUD mirroring
   `repository/observations.rs`.
-- [ ] `apps/api/src/routes/qa.rs` — `GET /v1/qa?status=pending`,
+- [x] `apps/api/src/routes/qa.rs` — `GET /v1/qa?status=pending`,
   `POST /v1/qa/{id}/answer` (validates via `state_machine::can_transition`,
   transitions `human_review → <step>`).
-- [ ] Wire into `routes/mod.rs`.
-- [ ] State machine: add `is_review_state()` predicate + amended arms +
+- [x] Wire into `routes/mod.rs`.
+- [x] State machine: add `is_review_state()` predicate + amended arms +
   tests. See [IMPROVEMENT.md §5](IMPROVEMENT.md).
-- [ ] `apps/api/src/routes/tasks.rs` (~`:516`): accept new transitions.
-- [ ] `engine/pipeline.rs` (~`:180`): symmetric `AiReview` arm next to
+- [x] `apps/api/src/routes/tasks.rs` (~`:516`): accept new transitions.
+- [x] `engine/pipeline.rs` (~`:180`): symmetric `AiReview` arm next to
   existing `HumanReview` arm (no-op for now; worker just parks).
-- [ ] Sentinel parser module in
+- [x] Sentinel parser module in
   `apps/orchestra/src/providers/sentinel.rs` (new): parses post-exit log
   for `DIRAIGENT_QA[<nonce>]: ... DIRAIGENT_QA_END[<nonce>]` and
   `DIRAIGENT_QA_OPTIONS[<nonce>]: a|b|c`. Per-step nonce minted in worker
   and embedded in system prompt.
-- [ ] Hook parser into
+- [x] Hook parser into
   [providers/claude_code.rs](apps/orchestra/src/providers/claude_code.rs)
   post-exit path. Return parsed sentinels alongside existing result.
-- [ ] **Agent-ignored-stop guard** in `worker.rs`: if any sentinel was
+- [x] **Agent-ignored-stop guard** in `worker.rs`: if any sentinel was
   found, force transition to `ai_review` *regardless of exit code, diff
   size, or `output.is_error`*. Add log line warning when this overrides a
   "successful" exit.
-- [ ] QA item insertion writes a bridge row to `task_updates` of kind
+- [x] QA item insertion writes a bridge row to `task_updates` of kind
   `question` with `metadata.qa_item_id`.
-- [ ] System-prompt addendum in `engine/prompt.rs` instructing the agent
+- [x] System-prompt addendum in `engine/prompt.rs` instructing the agent
   how/when to emit the sentinel with the supplied nonce.
 
 ### Tests
-- [ ] State-machine unit tests for every new edge.
-- [ ] Parser unit tests: missing end-tag, wrong nonce, no-column-0,
+- [x] State-machine unit tests for every new edge.
+- [x] Parser unit tests: missing end-tag, wrong nonce, no-column-0,
   multi-line body, two QA blocks in same log.
-- [ ] **Forged-sentinel test:** log containing a sentinel with wrong nonce
+- [x] **Forged-sentinel test:** log containing a sentinel with wrong nonce
   → no QA item created.
-- [ ] **Ignored-stop test:** log contains valid sentinel **and** a diff
+- [x] **Ignored-stop test:** log contains valid sentinel **and** a diff
   was committed and exit code = 0 → task ends in `ai_review`, no merge.
-- [ ] Integration test: POST `/v1/qa/{id}/answer` from a human transitions
+- [x] Integration test: POST `/v1/qa/{id}/answer` from a human transitions
   task back to the original step name.
 
 ### Exit
