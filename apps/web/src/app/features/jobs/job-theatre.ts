@@ -49,8 +49,18 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
   imports: [NgxGraphModule, DatePipe],
   styles: [`
     :host { display: block; }
-    .theatre { display: grid; grid-template-columns: minmax(0, 1fr) 420px; height: calc(100vh - 4rem); transition: grid-template-columns 0.2s ease; }
+    .job-theatre-root { display: flex; flex-direction: column; height: calc(100vh - 4rem); }
+    .theatre { display: grid; grid-template-columns: minmax(0, 1fr) 420px; flex: 1; min-height: 0; transition: grid-template-columns 0.2s ease; }
     .theatre.diff-open { grid-template-columns: minmax(0, 1fr) 70%; }
+    .timeline-strip { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--surface, #181825); border-top: 1px solid var(--border, #313244); color: #cdd6f4; font-size: 12px; flex: 0 0 auto; }
+    .timeline-strip input[type="range"] { flex: 1; accent-color: #cba6f7; }
+    .timeline-strip button { background: #313244; border: 1px solid #45475a; color: #cdd6f4; padding: 0.3rem 0.6rem; font-size: 11px; border-radius: 3px; cursor: pointer; }
+    .timeline-strip button:hover { background: #45475a; }
+    .timeline-strip button.active { background: #cba6f7; color: #11111b; border-color: #cba6f7; }
+    .timeline-label { font-family: monospace; color: #a6adc8; min-width: 14ch; text-align: right; }
+    .timeline-mode { font-size: 10px; padding: 2px 6px; border-radius: 3px; background: #313244; color: #a6adc8; text-transform: uppercase; letter-spacing: 0.05em; }
+    .timeline-mode.live { background: #1f3d2a; color: #a6e3a1; }
+    .timeline-mode.scrubbing { background: #3d3a1f; color: #f9e2af; }
     .file-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem; cursor: pointer; border-bottom: 1px solid #313244; font-size: 12px; }
     .file-row:hover { background: #1e1e2e; }
     .file-row.active { background: #313244; }
@@ -112,6 +122,7 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
     @if (!loaded()) {
       <div class="empty" data-testid="job-theatre-loading">Loading job theatre…</div>
     } @else {
+    <div class="job-theatre-root">
     <div class="theatre" [class.diff-open]="!!openDiff()" data-testid="job-theatre">
       <div class="graph-pane" data-testid="job-theatre-graph">
         @if (nodes().length === 0) {
@@ -251,6 +262,24 @@ const SENTINEL_RE = /<<<([A-Z_]+)>>>([\s\S]*?)<<<END>>>/g;
         }
       </aside>
     </div>
+    <div class="timeline-strip" data-testid="timeline-strip">
+      <span class="timeline-mode" [class.live]="scrubTime() === null" [class.scrubbing]="scrubTime() !== null"
+            [attr.data-testid]="'timeline-mode-' + (scrubTime() === null ? 'live' : 'scrubbing')">
+        {{ scrubTime() === null ? 'LIVE' : 'SCRUB' }}
+      </span>
+      <button data-testid="timeline-replay" [class.active]="replaying()" (click)="toggleReplay()" [disabled]="!timelineRange()">
+        {{ replaying() ? 'Pause' : 'Replay' }}
+      </button>
+      <button data-testid="timeline-live" (click)="goLive()" [disabled]="scrubTime() === null">Live</button>
+      <input type="range" min="0" max="1000" step="1"
+             [value]="scrubFraction() * 1000"
+             (input)="onScrub($event)"
+             (mousedown)="onScrubStart()"
+             [disabled]="!timelineRange()"
+             data-testid="timeline-scrub" />
+      <span class="timeline-label" data-testid="timeline-label">{{ scrubLabel() }}</span>
+    </div>
+    </div>
     }
   `,
 })
@@ -261,6 +290,14 @@ export class JobTheatrePage implements OnInit, OnDestroy {
 
   /** Closes the SSE EventSource on destroy. */
   private streamUnsubscribe: (() => void) | null = null;
+
+  /** Scrubber state. `null` = live mode; otherwise epoch-ms. */
+  scrubTime = signal<number | null>(null);
+  replaying = signal(false);
+  private replayHandle: ReturnType<typeof setInterval> | null = null;
+  /** Replay speed multiplier. */
+  private readonly REPLAY_SPEED = 4;
+  private readonly REPLAY_TICK_MS = 100;
 
   layout = new DagreLayout();
   layoutSettings = { orientation: 'LR' as const, marginX: 24, marginY: 24, edgePadding: 80, rankPadding: 80, nodePadding: 32 };
@@ -524,10 +561,21 @@ export class JobTheatrePage implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.streamUnsubscribe?.();
     this.streamUnsubscribe = null;
+    if (this.replayHandle !== null) {
+      clearInterval(this.replayHandle);
+      this.replayHandle = null;
+    }
   }
 
-  /** Resolve a live status string for a node from current signals. */
+  /** Resolve a status string for a node, honouring scrub time if set. */
   nodeStatus(node: JobNode): string {
+    const t = this.scrubTime();
+    if (t !== null) return this.statusAt(node, t);
+    return this.liveStatus(node);
+  }
+
+  /** Live status (current signal values). */
+  private liveStatus(node: JobNode): string {
     if (node.kind === 'task') {
       const state = (node.ref as { task: SpTask }).task.state;
       // Map orchestra task states onto DAG status colours.
@@ -557,6 +605,182 @@ export class JobTheatrePage implements OnInit, OnDestroy {
       const steps = this.nodes().filter(n => n.kind === 'step');
       const isLast = steps.length > 0 && steps[steps.length - 1].id === node.id;
       return taskRunning && isLast ? 'running' : 'done';
+    }
+    return 'pending';
+  }
+
+  // ---- Timeline scrub helpers ----------------------------------------------
+
+  /** [start, end] epoch-ms covering the task lifetime; null when no task. */
+  timelineRange = computed<[number, number] | null>(() => {
+    const t = this.task();
+    if (!t) return null;
+    const start = new Date(t.created_at).getTime();
+    // End: completion if known, else max observed event ts, else now.
+    let end = t.completed_at ? new Date(t.completed_at).getTime() : 0;
+    if (!end) {
+      for (const a of this.audit()) end = Math.max(end, new Date(a.created_at).getTime());
+      for (const l of this.logs()) end = Math.max(end, new Date(l.created_at).getTime());
+      for (const q of this.qa()) {
+        end = Math.max(end, new Date(q.created_at).getTime());
+        if (q.answered_at) end = Math.max(end, new Date(q.answered_at).getTime());
+      }
+      if (!end) end = Date.now();
+    }
+    if (end <= start) end = start + 1;
+    return [start, end];
+  });
+
+  /** Current scrub position as a 0..1 fraction (1 in live mode). */
+  scrubFraction = computed<number>(() => {
+    const r = this.timelineRange();
+    const t = this.scrubTime();
+    if (!r) return 1;
+    if (t === null) return 1;
+    const [start, end] = r;
+    return Math.max(0, Math.min(1, (t - start) / (end - start)));
+  });
+
+  scrubLabel = computed<string>(() => {
+    const t = this.scrubTime();
+    const r = this.timelineRange();
+    if (t === null || !r) return 'live';
+    const d = new Date(t);
+    return d.toLocaleTimeString();
+  });
+
+  onScrubStart(): void {
+    // Pause auto-replay on user grab.
+    if (this.replaying()) this.pauseReplay();
+  }
+
+  onScrub(ev: Event): void {
+    const target = ev.target as HTMLInputElement;
+    const frac = Number(target.value) / 1000;
+    const r = this.timelineRange();
+    if (!r) return;
+    const [start, end] = r;
+    const t = start + frac * (end - start);
+    // Snap to live if user drags to the far right.
+    if (frac >= 0.999) {
+      this.scrubTime.set(null);
+    } else {
+      this.scrubTime.set(t);
+    }
+  }
+
+  goLive(): void {
+    this.pauseReplay();
+    this.scrubTime.set(null);
+  }
+
+  toggleReplay(): void {
+    if (this.replaying()) this.pauseReplay();
+    else this.startReplay();
+  }
+
+  private startReplay(): void {
+    const r = this.timelineRange();
+    if (!r) return;
+    const [start, end] = r;
+    // If currently live or at end, restart from beginning.
+    const cur = this.scrubTime();
+    if (cur === null || cur >= end - 1) {
+      this.scrubTime.set(start);
+    }
+    this.replaying.set(true);
+    const tickMs = this.REPLAY_TICK_MS;
+    const stepMs = tickMs * this.REPLAY_SPEED;
+    this.replayHandle = setInterval(() => {
+      const range = this.timelineRange();
+      if (!range) { this.pauseReplay(); return; }
+      const [s, e] = range;
+      const t = this.scrubTime() ?? s;
+      const next = t + stepMs;
+      if (next >= e) {
+        // Snap to live and stop.
+        this.scrubTime.set(null);
+        this.pauseReplay();
+      } else {
+        this.scrubTime.set(next);
+      }
+    }, tickMs);
+  }
+
+  private pauseReplay(): void {
+    if (this.replayHandle !== null) {
+      clearInterval(this.replayHandle);
+      this.replayHandle = null;
+    }
+    this.replaying.set(false);
+  }
+
+  /** Status for a node at a specific epoch-ms `t`. */
+  private statusAt(node: JobNode, t: number): string {
+    if (node.kind === 'task') {
+      const task = (node.ref as { task: SpTask }).task;
+      const createdAt = new Date(task.created_at).getTime();
+      if (t < createdAt) return 'pending';
+      // Walk audit entries in order; find the most recent task-state change <= t.
+      let state: string | null = null;
+      const rows = [...this.audit()]
+        .filter(a => a.entity_type === 'task' && a.entity_id === task.id)
+        .sort((a, b) => a.created_at.localeCompare(b.created_at));
+      for (const row of rows) {
+        if (new Date(row.created_at).getTime() > t) break;
+        const after = row.after_state as Record<string, unknown> | null;
+        const s = after?.['state'];
+        if (typeof s === 'string') state = s;
+      }
+      if (state === null) state = 'backlog';
+      if (state === 'done') return 'done';
+      if (state === 'cancelled' || state === 'failed') return 'failed';
+      if (state === 'ai_review' || state === 'human_review') return 'qa-parked';
+      if (state === 'backlog' || state === 'ready') return 'pending';
+      return 'running';
+    }
+    if (node.kind === 'step') {
+      const ref = node.ref as { step_name: string; logs: TaskLogSummary[] };
+      const firstTs = ref.logs.length > 0
+        ? new Date(ref.logs[0].created_at).getTime()
+        : Number.POSITIVE_INFINITY;
+      if (firstTs > t) return 'pending';
+      // "Done" if a later step (in the layout order) already has a log <= t.
+      const steps = this.nodes().filter(n => n.kind === 'step');
+      const myIdx = steps.findIndex(s => s.id === node.id);
+      for (let i = myIdx + 1; i < steps.length; i++) {
+        const laterRef = steps[i].ref as { logs: TaskLogSummary[] };
+        const ts = laterRef.logs.length > 0 ? new Date(laterRef.logs[0].created_at).getTime() : Number.POSITIVE_INFINITY;
+        if (ts <= t) return 'done';
+      }
+      // No later step started — was this step the final one and is task done?
+      const task = this.task();
+      if (task && task.completed_at) {
+        const completed = new Date(task.completed_at).getTime();
+        const isLast = myIdx === steps.length - 1;
+        if (isLast && t >= completed) return 'done';
+      }
+      return 'running';
+    }
+    if (node.kind === 'qa') {
+      const q = (node.ref as { qa: SpQaItem }).qa;
+      const created = new Date(q.created_at).getTime();
+      if (t < created) return 'pending';
+      const answered = q.answered_at ? new Date(q.answered_at).getTime() : null;
+      if (answered !== null && t >= answered) {
+        if (q.status === 'expired') return 'failed';
+        return 'done';
+      }
+      return 'qa-parked';
+    }
+    if (node.kind === 'report') {
+      const r = (node.ref as { report: SpReport }).report;
+      const created = new Date(r.created_at).getTime();
+      if (t < created) return 'pending';
+      const updated = new Date(r.updated_at).getTime();
+      if (t >= updated && r.status === 'completed') return 'done';
+      if (t >= updated && r.status === 'failed') return 'failed';
+      return 'pending';
     }
     return 'pending';
   }
