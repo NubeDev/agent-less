@@ -197,3 +197,48 @@ Top-level fields are set in the project record; metadata fields are set in proje
 ```
 
 **Substitution order**: built-ins → project metadata → step vars. Step vars can override project metadata if they use the same key name.
+
+## QA Sentinels & `qa:` Block
+
+A step can emit a sentinel block (`<<<QUESTION>>>…<<<END>>>` or
+`<<<HANDOVER>>>…<<<END>>>`) to pause the pipeline and ask for an
+answer. Behaviour is configured per step under `qa:`:
+
+```yaml
+qa:
+  accept: confidence       # confidence | second_pass | always_human | always_ai
+  confidence_threshold: 0.85
+  expires_at_secs: 86400   # how long an AI-pending QA can sit before escalating
+  stuck_detector: true     # auto-escalate when cost burns with no progress
+```
+
+- `confidence` — AI answers; accept if `confidence ≥ threshold`, else
+  escalate to a human.
+- `second_pass` — run the responder twice; accept iff both agree.
+  Forced on for `Merge`-profile steps regardless of YAML.
+- `always_human` / `always_ai` — skip the auto-answer flow entirely.
+
+### ⚠️ Surprise billing: re-runs re-pay the step budget
+
+When a QA is answered, the originating step is **re-invoked from
+scratch** in a fresh provider session — no resume / no prompt-cache
+reuse. The task's `cost_usd` accumulates additively (`SET cost_usd =
+cost_usd + $4`), so a step that already burned `$X` and then re-runs
+for `$Y` is billed `$X + $Y` against the task budget.
+
+Implications:
+- `accept: second_pass` doubles the responder cost per QA on top of
+  the re-run, by design.
+- A budget-heavy step (large context, long horizon) that fires
+  several QAs can blow past its per-step `budget` in cumulative
+  dollars. The per-step `budget` field caps a single invocation, not
+  the cumulative cost across re-runs.
+- The stuck-detector (`qa.stuck_detector: true`, default) trips when
+  cost crosses ≥80% of budget with zero diff progress and zero
+  sentinels — set this to `false` only if you intentionally want
+  re-run loops to run to budget exhaustion.
+
+If cost predictability matters more than QA fidelity for a given
+step, prefer `accept: always_ai` with a tight `expires_at_secs`, or
+mark the step `retriable: false` so a rejected QA cancels the task
+instead of re-running.

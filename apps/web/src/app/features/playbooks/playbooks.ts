@@ -11,8 +11,45 @@ import {
 import { CrudFeatureBase } from '../../shared/crud-feature-base';
 import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/confirm-dialog';
 import { StepTemplatesPage } from './step-templates';
+import { classifyStepProfile } from '../../core/services/override-resolver';
 
 type PlaybooksTab = 'playbooks' | 'templates';
+
+function hasQaConfig(step: SpPlaybookStep): boolean {
+  const s = step.settings as Record<string, unknown> | undefined;
+  return !!(s && typeof s['qa'] === 'object' && s['qa'] !== null);
+}
+
+function playbookSourceUrl(pb: SpPlaybook): string | null {
+  const md = pb.metadata as Record<string, unknown> | undefined;
+  const u = md?.['source_url'] ?? md?.['git_url'];
+  return typeof u === 'string' && u.length > 0 ? u : null;
+}
+
+function renderPlaybookYaml(pb: SpPlaybook): string {
+  const lines: string[] = [];
+  lines.push(`title: ${pb.title}`);
+  if (pb.trigger_description) lines.push(`trigger_description: ${JSON.stringify(pb.trigger_description)}`);
+  if (pb.tags.length > 0) lines.push(`tags: [${pb.tags.join(', ')}]`);
+  lines.push('steps:');
+  for (const step of pb.steps) {
+    lines.push(`  - name: ${step.name}`);
+    if (step.description) lines.push(`    description: ${JSON.stringify(step.description)}`);
+    if (step.model) lines.push(`    model: ${step.model}`);
+    if (step.budget != null) lines.push(`    budget: ${step.budget}`);
+    if (step.allowed_tools) lines.push(`    allowed_tools: ${step.allowed_tools}`);
+    if (step.git_action) lines.push(`    git_action: ${step.git_action}`);
+    const s = step.settings as Record<string, unknown> | undefined;
+    const qa = s?.['qa'] as Record<string, unknown> | undefined;
+    if (qa && typeof qa === 'object') {
+      lines.push('    qa:');
+      for (const [k, v] of Object.entries(qa)) {
+        lines.push(`      ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+      }
+    }
+  }
+  return lines.join('\n');
+}
 
 @Component({
   selector: 'app-playbooks',
@@ -184,13 +221,30 @@ type PlaybooksTab = 'playbooks' | 'templates';
                     <h3 class="text-sm font-medium text-text-primary mb-3">{{ t('playbooks.stepsTitle') }}</h3>
                     <div class="space-y-3">
                       @for (step of pb.steps; track $index; let i = $index) {
-                        <div class="bg-bg rounded-lg border border-border p-3">
+                        <div class="bg-bg rounded-lg border p-3"
+                          [class.border-ctp-mauve]="profileOf(step) === 'merge'"
+                          [class.border-border]="profileOf(step) !== 'merge'">
                           <div class="flex items-center justify-between mb-1">
-                            <div class="flex items-center gap-2">
+                            <div class="flex items-center gap-2 flex-wrap">
                               <span class="w-6 h-6 bg-accent/20 text-accent rounded-full text-xs font-medium flex items-center justify-center">
                                 {{ i + 1 }}
                               </span>
                               <span class="text-sm font-medium text-text-primary">{{ step.name }}</span>
+                              <span class="text-xs px-1.5 py-0.5 rounded"
+                                [class.bg-ctp-mauve]="profileOf(step) === 'merge'"
+                                [class.bg-ctp-blue]="profileOf(step) === 'review'"
+                                [class.bg-ctp-green]="profileOf(step) === 'implement'"
+                                [class.bg-ctp-yellow]="profileOf(step) === 'dream'"
+                                [class.bg-surface-hover]="profileOf(step) === 'other'"
+                                [class.text-bg]="profileOf(step) !== 'other'"
+                                [class.text-text-secondary]="profileOf(step) === 'other'">
+                                {{ profileOf(step) }}
+                              </span>
+                              @if (hasQa(step)) {
+                                <span class="text-xs px-1.5 py-0.5 rounded bg-ctp-peach/20 text-ctp-peach" title="This step has a qa: config block">
+                                  qa
+                                </span>
+                              }
                             </div>
                             @if (step.allowed_tools) {
                               <span class="text-xs px-2 py-0.5 rounded bg-surface-hover text-text-secondary">
@@ -220,6 +274,25 @@ type PlaybooksTab = 'playbooks' | 'templates';
                       <pre class="text-xs text-text-secondary bg-bg rounded-lg border border-border p-3 overflow-x-auto">{{ pb.metadata | json }}</pre>
                     </div>
                   }
+
+                  <!-- YAML view + edit in git -->
+                  <div class="border-t border-border pt-4 mb-4">
+                    <div class="flex items-center gap-3 mb-2">
+                      <button type="button" (click)="toggleYaml(pb.id)"
+                        class="text-xs px-2 py-1 rounded bg-surface-hover text-text-secondary hover:text-text-primary">
+                        {{ yamlOpen() === pb.id ? 'Hide YAML' : 'View YAML' }}
+                      </button>
+                      @if (sourceUrl(pb); as url) {
+                        <a [href]="url" target="_blank" rel="noopener noreferrer"
+                          class="text-xs px-2 py-1 rounded bg-surface-hover text-text-secondary hover:text-text-primary">
+                          Edit in git
+                        </a>
+                      }
+                    </div>
+                    @if (yamlOpen() === pb.id) {
+                      <pre class="text-xs text-text-primary bg-bg rounded-lg border border-border p-3 overflow-x-auto whitespace-pre">{{ renderYaml(pb) }}</pre>
+                    }
+                  </div>
 
                   <div class="border-t border-border pt-3 text-xs text-text-secondary">
                     {{ t('playbooks.updatedAt') }}: {{ pb.updated_at | date:'medium' }}
@@ -256,6 +329,27 @@ export class PlaybooksPage extends CrudFeatureBase<SpPlaybook> {
 
   activeTab = signal<PlaybooksTab>('playbooks');
   currentProject = signal<DgProject | null>(null);
+  yamlOpen = signal<string | null>(null);
+
+  toggleYaml(id: string): void {
+    this.yamlOpen.set(this.yamlOpen() === id ? null : id);
+  }
+
+  profileOf(step: SpPlaybookStep): string {
+    return classifyStepProfile(step);
+  }
+
+  hasQa(step: SpPlaybookStep): boolean {
+    return hasQaConfig(step);
+  }
+
+  sourceUrl(pb: SpPlaybook): string | null {
+    return playbookSourceUrl(pb);
+  }
+
+  renderYaml(pb: SpPlaybook): string {
+    return renderPlaybookYaml(pb);
+  }
 
   @ViewChild('stepTemplates') private stepTemplatesComp?: StepTemplatesPage;
 
