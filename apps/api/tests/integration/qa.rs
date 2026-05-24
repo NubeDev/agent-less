@@ -699,3 +699,76 @@ async fn qa_metrics_aggregates_velocity_and_outcomes() {
 
     app.cleanup().await;
 }
+
+/// SoW gap #11 follow-up: POST /v1/qa/{id}/ai-confidence merges
+/// `metadata.ai_confidence`. /v1/qa/metrics then surfaces it as
+/// count/avg/p50/p95 plus a 5-bucket histogram.
+#[tokio::test]
+async fn qa_ai_confidence_stamp_and_metrics_distribution() {
+    let app = require_db!();
+    let project_id = app.create_project("qa-conf").await;
+    let task = app.create_task(project_id, "confidence test").await;
+    let task_uuid: uuid::Uuid = task["id"].as_str().unwrap().parse().unwrap();
+
+    // Insert 5 pending AI QAs, then stamp confidences via the route.
+    // One per bucket: 0.1 / 0.3 / 0.5 / 0.7 / 0.9.
+    let confs = [0.1_f64, 0.3, 0.5, 0.7, 0.9];
+    let mut ids: Vec<uuid::Uuid> = vec![];
+    for _ in 0..5 {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO diraigent.task_qa_item
+                 (task_id, project_id, step_name, kind, prompt, responder)
+             VALUES ($1, $2, 'implement', 'question', 'q?', 'ai')
+             RETURNING id",
+        )
+        .bind(task_uuid)
+        .bind(project_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    for (id, c) in ids.iter().zip(confs.iter()) {
+        let r = app
+            .send(post_json(
+                &format!("/v1/qa/{id}/ai-confidence"),
+                json!({ "confidence": c }),
+            ))
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "stamp {c}: {}", r.json);
+        // Returned QA row carries the new metadata key.
+        let stamped = r.json["metadata"]["ai_confidence"].as_f64().unwrap();
+        assert!((stamped - *c).abs() < 1e-9);
+    }
+
+    // Validation: out-of-range and NaN must 422.
+    let r = app
+        .send(post_json(
+            &format!("/v1/qa/{}/ai-confidence", ids[0]),
+            json!({ "confidence": 1.5 }),
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Metrics surfaces the new section.
+    let r = app
+        .send(get(&format!(
+            "/v1/qa/metrics?project_id={project_id}&window_days=30"
+        )))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let conf = &r.json["ai_confidence"];
+    assert_eq!(conf["count"], 5);
+    let p50 = conf["p50"].as_f64().unwrap();
+    assert!((p50 - 0.5).abs() < 1e-9, "p50={p50}");
+    let avg = conf["avg"].as_f64().unwrap();
+    assert!((avg - 0.5).abs() < 1e-9, "avg={avg}");
+    let h = &conf["histogram"];
+    assert_eq!(h["0.0-0.2"], 1);
+    assert_eq!(h["0.2-0.4"], 1);
+    assert_eq!(h["0.4-0.6"], 1);
+    assert_eq!(h["0.6-0.8"], 1);
+    assert_eq!(h["0.8-1.0"], 1);
+
+    app.cleanup().await;
+}

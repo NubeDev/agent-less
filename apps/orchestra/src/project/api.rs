@@ -274,6 +274,18 @@ impl ProjectsApi {
         .await
     }
 
+    /// SoW gap #11 follow-up: stamp `metadata.ai_confidence` on the QA
+    /// row. Called by the worker after every `auto_answer_qa` so the
+    /// SoW-4 metrics endpoint sees the full confidence distribution
+    /// (accepted + escalated).
+    pub async fn stamp_qa_ai_confidence(&self, qa_item_id: &str, confidence: f32) -> Result<Value> {
+        self.post(
+            &format!("/qa/{qa_item_id}/ai-confidence"),
+            &serde_json::json!({ "confidence": confidence }),
+        )
+        .await
+    }
+
     /// SoW-2 timeout sweeper: ask the API to escalate every pending
     /// AI-targeted QA item whose `expires_at` has passed. Returns the
     /// list of items the API actually transitioned.
@@ -794,6 +806,9 @@ impl crate::engine::task_source::TaskSource for ProjectsApi {
         target_step: &str,
     ) -> Result<Value> {
         ProjectsApi::answer_qa_item(self, qa_item_id, answer, target_step).await
+    }
+    async fn stamp_qa_ai_confidence(&self, qa_item_id: &str, confidence: f32) -> Result<Value> {
+        ProjectsApi::stamp_qa_ai_confidence(self, qa_item_id, confidence).await
     }
     async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
         ProjectsApi::sweep_expired_qa(self).await

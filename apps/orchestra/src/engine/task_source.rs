@@ -71,6 +71,12 @@ pub trait TaskSource: Send + Sync {
         answer: &str,
         target_step: &str,
     ) -> Result<Value>;
+    /// SoW gap #11 follow-up: stamp the AI responder's reported
+    /// confidence on the QA row's `metadata.ai_confidence` so the
+    /// metrics endpoint sees the full distribution. Best-effort —
+    /// failure must not block the surrounding accept/escalate flow.
+    /// Implementations without server-side QA persistence may no-op.
+    async fn stamp_qa_ai_confidence(&self, qa_item_id: &str, confidence: f32) -> Result<Value>;
     /// SoW-2 timeout sweeper: ask the upstream to escalate every
     /// pending AI-targeted QA item whose `expires_at` has elapsed.
     /// Returns the list of items that were transitioned (may be

@@ -282,6 +282,12 @@ impl TaskSource for OrchestraTaskSource {
             .await
     }
 
+    async fn stamp_qa_ai_confidence(&self, qa_item_id: &str, confidence: f32) -> Result<Value> {
+        self.api
+            .stamp_qa_ai_confidence(qa_item_id, confidence)
+            .await
+    }
+
     async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
         self.api.sweep_expired_qa().await
     }

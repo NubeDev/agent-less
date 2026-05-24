@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/qa", get(list_pending).post(create))
         .route("/v1/qa/{id}", get(get_one))
         .route("/v1/qa/{id}/answer", post(answer))
+        .route("/v1/qa/{id}/ai-confidence", post(stamp_ai_confidence))
         .route("/v1/qa/sweep-expired", post(sweep_expired))
         .route("/v1/qa/sweep-clean", post(sweep_clean))
         .route("/v1/qa/metrics", get(metrics))
@@ -394,4 +395,39 @@ async fn metrics(
     let days = params.window_days.unwrap_or(30).clamp(1, 365);
     let v = crate::repository::qa_velocity_metrics(&state.pool, params.project_id, days).await?;
     Ok(Json(v))
+}
+
+#[derive(serde::Deserialize)]
+struct StampAiConfidenceReq {
+    /// AI responder's reported confidence, in [0.0, 1.0]. Out-of-range
+    /// values are rejected — the responder either reported a parsable
+    /// number or it didn't, and a clipped value would corrupt the
+    /// SoW-4 telemetry distribution.
+    confidence: f64,
+}
+
+/// SoW gap #11 follow-up: stamp the AI responder's confidence onto
+/// `metadata.ai_confidence` for a QA item. Called by the orchestra
+/// worker after every `auto_answer_qa` run regardless of whether the
+/// decision was accept or escalate — so the metrics endpoint sees the
+/// full confidence distribution.
+///
+/// Authz: same model as `answer` — the caller must be a member of the
+/// QA's project (or an authority on it).
+async fn stamp_ai_confidence(
+    State(state): State<AppState>,
+    AuthUser(user_id): AuthUser,
+    OptionalAgentId(agent_id): OptionalAgentId,
+    Path(id): Path<Uuid>,
+    Json(req): Json<StampAiConfidenceReq>,
+) -> Result<Json<TaskQaItem>, AppError> {
+    if !req.confidence.is_finite() || !(0.0..=1.0).contains(&req.confidence) {
+        return Err(AppError::Validation(
+            "confidence must be a finite number in [0.0, 1.0]".into(),
+        ));
+    }
+    let existing = qa_items::get_qa_item(&state.pool, id).await?;
+    require_membership(state.db.as_ref(), agent_id, user_id, existing.project_id).await?;
+    let row = qa_items::stamp_qa_ai_confidence(&state.pool, id, req.confidence).await?;
+    Ok(Json(row))
 }

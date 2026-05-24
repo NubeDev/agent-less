@@ -668,35 +668,52 @@ pub async fn run_worker(
         for posted in &sentinel_triggered {
             let opts_ref = posted.options.as_deref();
             match auto_answer_qa(&runner, &qa_cfg, &posted.prompt, opts_ref).await {
-                Ok(AcceptDecision::Accept { answer, rationale }) => {
-                    info!(
-                        "worker {tid}: AI responder accepted QA {} ({rationale})",
-                        posted.id
-                    );
-                    if let Err(e) = api
-                        .answer_qa_item(&posted.id, &answer, &step_config.step_name)
-                        .await
+                Ok((decision, primary_confidence)) => {
+                    // gap #11 follow-up: stamp the primary pass's
+                    // confidence on the QA row metadata regardless of
+                    // accept/escalate so SoW-4 telemetry sees the full
+                    // AI-confidence distribution. Best-effort: a
+                    // failed stamp must not block the decision path.
+                    if let Some(c) = primary_confidence
+                        && let Err(e) = api.stamp_qa_ai_confidence(&posted.id, c).await
                     {
                         warn!(
-                            "worker {tid}: failed to submit AI answer for QA {}: {e:#}",
+                            "worker {tid}: failed to stamp ai_confidence on QA {}: {e:#}",
                             posted.id
                         );
                     }
-                }
-                Ok(AcceptDecision::Escalate { reason }) => {
-                    info!(
-                        "worker {tid}: AI responder escalated QA {} to human ({reason})",
-                        posted.id
-                    );
-                    if let Err(e) = api
-                        .post_task_update(
-                            task_id,
-                            "note",
-                            &format!("AI responder escalated QA {}: {reason}", posted.id),
-                        )
-                        .await
-                    {
-                        warn!("worker {tid}: failed to log AI escalation: {e:#}");
+                    match decision {
+                        AcceptDecision::Accept { answer, rationale } => {
+                            info!(
+                                "worker {tid}: AI responder accepted QA {} ({rationale})",
+                                posted.id
+                            );
+                            if let Err(e) = api
+                                .answer_qa_item(&posted.id, &answer, &step_config.step_name)
+                                .await
+                            {
+                                warn!(
+                                    "worker {tid}: failed to submit AI answer for QA {}: {e:#}",
+                                    posted.id
+                                );
+                            }
+                        }
+                        AcceptDecision::Escalate { reason } => {
+                            info!(
+                                "worker {tid}: AI responder escalated QA {} to human ({reason})",
+                                posted.id
+                            );
+                            if let Err(e) = api
+                                .post_task_update(
+                                    task_id,
+                                    "note",
+                                    &format!("AI responder escalated QA {}: {reason}", posted.id),
+                                )
+                                .await
+                            {
+                                warn!("worker {tid}: failed to log AI escalation: {e:#}");
+                            }
+                        }
                     }
                 }
                 Err(e) => {

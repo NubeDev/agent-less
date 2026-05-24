@@ -229,23 +229,32 @@ pub fn build_responder_prompt(question: &str, options: Option<&[String]>) -> Str
 /// Pure orchestration — does NOT touch the API. Worker integration is
 /// in `engine/worker.rs`; the responder there persists the decision
 /// (qa answer + transition) only if we return `Accept`.
+///
+/// Returns the accept decision **and** the primary pass's reported
+/// confidence (if any). The worker stamps the confidence onto the QA
+/// row's `metadata.ai_confidence` regardless of accept/escalate so
+/// SoW-4 telemetry sees the full distribution (gap #11 follow-up).
 pub async fn auto_answer_qa(
     runner: &dyn ResponderRunner,
     cfg: &QaConfig,
     question: &str,
     options: Option<&[String]>,
-) -> Result<AcceptDecision> {
+) -> Result<(AcceptDecision, Option<f32>)> {
     let prompt = build_responder_prompt(question, options);
 
     // AlwaysHuman short-circuits — no LLM call at all.
     if cfg.accept == AcceptMode::AlwaysHuman {
-        return Ok(AcceptDecision::Escalate {
-            reason: "policy: always_human".into(),
-        });
+        return Ok((
+            AcceptDecision::Escalate {
+                reason: "policy: always_human".into(),
+            },
+            None,
+        ));
     }
 
     let raw1 = runner.run(1, &prompt).await?;
     let a1 = parse_responder_output(&raw1);
+    let primary_confidence = a1.confidence;
 
     let a2 = if cfg.accept == AcceptMode::SecondPass {
         let raw2 = runner.run(2, &prompt).await?;
@@ -254,11 +263,9 @@ pub async fn auto_answer_qa(
         None
     };
 
-    Ok(accept_check(
-        cfg.accept,
-        cfg.min_confidence,
-        &a1,
-        a2.as_ref(),
+    Ok((
+        accept_check(cfg.accept, cfg.min_confidence, &a1, a2.as_ref()),
+        primary_confidence,
     ))
 }
 
@@ -428,10 +435,11 @@ mod tests {
     #[tokio::test]
     async fn auto_answer_always_human_short_circuits_no_call() {
         let runner = FakeRunner::new(vec![]); // would panic on call
-        let d = auto_answer_qa(&runner, &cfg(AcceptMode::AlwaysHuman, 0.85), "q", None)
+        let (d, conf) = auto_answer_qa(&runner, &cfg(AcceptMode::AlwaysHuman, 0.85), "q", None)
             .await
             .unwrap();
         assert!(matches!(d, AcceptDecision::Escalate { .. }));
+        assert!(conf.is_none(), "no LLM call => no confidence");
     }
 
     #[tokio::test]
@@ -439,13 +447,14 @@ mod tests {
         let runner = FakeRunner::new(vec![
             "<answer>postgres</answer><confidence>0.9</confidence>",
         ]);
-        let d = auto_answer_qa(&runner, &cfg(AcceptMode::Confidence, 0.85), "db?", None)
+        let (d, conf) = auto_answer_qa(&runner, &cfg(AcceptMode::Confidence, 0.85), "db?", None)
             .await
             .unwrap();
         match d {
             AcceptDecision::Accept { answer, .. } => assert_eq!(answer, "postgres"),
             _ => panic!("expected accept"),
         }
+        assert!((conf.unwrap() - 0.9).abs() < 1e-6);
     }
 
     #[tokio::test]
@@ -454,10 +463,13 @@ mod tests {
             "<answer>postgres</answer><confidence>0.4</confidence>",
             "<answer>POSTGRES</answer><confidence>0.4</confidence>",
         ]);
-        let d = auto_answer_qa(&runner, &cfg(AcceptMode::SecondPass, 0.85), "db?", None)
+        let (d, conf) = auto_answer_qa(&runner, &cfg(AcceptMode::SecondPass, 0.85), "db?", None)
             .await
             .unwrap();
         assert!(d.is_accept());
+        // Primary pass confidence surfaces even though SecondPass
+        // ignores it for the accept-check.
+        assert!((conf.unwrap() - 0.4).abs() < 1e-6);
     }
 
     #[test]

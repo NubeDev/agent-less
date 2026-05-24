@@ -308,6 +308,27 @@ pub async fn qa_velocity_metrics(
                 sum(CASE WHEN status  = 'expired'           THEN 1 ELSE 0 END)::float8 AS expired,
                 count(*)::float8 AS total
             FROM scoped
+        ),
+        ai_conf AS (
+            -- gap #11 follow-up: AI-confidence distribution. Worker
+            -- stamps metadata.ai_confidence on every auto-answered QA
+            -- (accept or escalate), so this includes rows whose
+            -- status is 'resolved' OR 'escalated' as long as the
+            -- metadata was set. NULL when no auto-answer ran yet.
+            SELECT
+                count(*)::bigint AS n,
+                avg((metadata->>'ai_confidence')::float8)                                                                       AS avg_c,
+                percentile_cont(0.5)  WITHIN GROUP (ORDER BY (metadata->>'ai_confidence')::float8)                              AS p50_c,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY (metadata->>'ai_confidence')::float8)                              AS p95_c,
+                -- 5 bins of width 0.2 over [0.0, 1.0]; the >=1.0 edge
+                -- folds into the top bucket so we never lose rows.
+                sum(CASE WHEN (metadata->>'ai_confidence')::float8 <  0.2                                        THEN 1 ELSE 0 END)::bigint AS bin_0_0_0_2,
+                sum(CASE WHEN (metadata->>'ai_confidence')::float8 >= 0.2 AND (metadata->>'ai_confidence')::float8 < 0.4 THEN 1 ELSE 0 END)::bigint AS bin_0_2_0_4,
+                sum(CASE WHEN (metadata->>'ai_confidence')::float8 >= 0.4 AND (metadata->>'ai_confidence')::float8 < 0.6 THEN 1 ELSE 0 END)::bigint AS bin_0_4_0_6,
+                sum(CASE WHEN (metadata->>'ai_confidence')::float8 >= 0.6 AND (metadata->>'ai_confidence')::float8 < 0.8 THEN 1 ELSE 0 END)::bigint AS bin_0_6_0_8,
+                sum(CASE WHEN (metadata->>'ai_confidence')::float8 >= 0.8                                        THEN 1 ELSE 0 END)::bigint AS bin_0_8_1_0
+            FROM scoped
+            WHERE metadata ? 'ai_confidence'
         )
         SELECT jsonb_build_object(
             'window_days',   $2::int,
@@ -328,13 +349,26 @@ pub async fn qa_velocity_metrics(
                 'p50',   ai_t.p50_s,
                 'p95',   ai_t.p95_s
             ),
+            'ai_confidence', jsonb_build_object(
+                'count', coalesce(ai_conf.n, 0),
+                'avg',   ai_conf.avg_c,
+                'p50',   ai_conf.p50_c,
+                'p95',   ai_conf.p95_c,
+                'histogram', jsonb_build_object(
+                    '0.0-0.2', coalesce(ai_conf.bin_0_0_0_2, 0),
+                    '0.2-0.4', coalesce(ai_conf.bin_0_2_0_4, 0),
+                    '0.4-0.6', coalesce(ai_conf.bin_0_4_0_6, 0),
+                    '0.6-0.8', coalesce(ai_conf.bin_0_6_0_8, 0),
+                    '0.8-1.0', coalesce(ai_conf.bin_0_8_1_0, 0)
+                )
+            ),
             'accept_rate',     CASE WHEN (outcome_rates.clean + outcome_rates.reverted + outcome_rates.followup) > 0
                                     THEN outcome_rates.clean / (outcome_rates.clean + outcome_rates.reverted + outcome_rates.followup)
                                     ELSE NULL END,
             'escalation_rate', CASE WHEN outcome_rates.total > 0 THEN outcome_rates.escalated / outcome_rates.total ELSE NULL END,
             'expiration_rate', CASE WHEN outcome_rates.total > 0 THEN outcome_rates.expired   / outcome_rates.total ELSE NULL END
         )
-        FROM counts, human_t, ai_t, outcome_rates
+        FROM counts, human_t, ai_t, outcome_rates, ai_conf
         "#,
     )
     .bind(project_id)
@@ -342,4 +376,30 @@ pub async fn qa_velocity_metrics(
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+/// SoW gap #11 follow-up: stamp the AI responder's reported confidence
+/// onto the QA row's `metadata.ai_confidence`. Idempotent overwrite —
+/// later passes (e.g. SecondPass) may update with the more recent
+/// value; we don't track per-pass history.
+///
+/// `confidence` is the float emitted by the responder via
+/// `<confidence>0.NN</confidence>`. Caller is expected to clamp /
+/// validate (route already does).
+pub async fn stamp_qa_ai_confidence(
+    pool: &PgPool,
+    id: Uuid,
+    confidence: f64,
+) -> Result<TaskQaItem, AppError> {
+    let row = sqlx::query_as::<_, TaskQaItem>(
+        "UPDATE diraigent.task_qa_item
+         SET metadata = metadata || jsonb_build_object('ai_confidence', $2::float8)
+         WHERE id = $1
+         RETURNING *",
+    )
+    .bind(id)
+    .bind(confidence)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
 }

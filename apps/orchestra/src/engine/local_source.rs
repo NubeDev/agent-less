@@ -371,6 +371,13 @@ impl TaskSource for LocalTaskSource {
         }))
     }
 
+    async fn stamp_qa_ai_confidence(&self, qa_item_id: &str, confidence: f32) -> Result<Value> {
+        // Local mode has no persistent QA store; log so the operator
+        // can still see what would have been written.
+        tracing::info!("local: QA[{qa_item_id}] ai_confidence={confidence:.3}");
+        Ok(json!({ "id": qa_item_id, "ai_confidence": confidence }))
+    }
+
     async fn sweep_expired_qa(&self) -> Result<Vec<Value>> {
         // Local mode has no persistent QA store / no sweeper.
         Ok(Vec::new())

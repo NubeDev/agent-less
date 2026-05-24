@@ -436,16 +436,23 @@ SoW-2.
 
 ### Operator gaps
 
-10. **Forensics.** QA item should store `sentinel_raw` (the matched
-    block as the agent emitted it) for debugging "why did this fire?".
+10. **Forensics.** ✅ Implemented in commit c82b9c7. QA item stores
+    `metadata.sentinel_raw` (the matched block as the agent emitted
+    it) for "why did this fire?" debugging. Captured by
+    `providers/sentinel.rs::ParsedQuestion.raw` and serialized via
+    `ProjectsApi::post_qa_item`.
 11. **QA velocity metrics.** ✅ Backend endpoint shipped:
     `GET /v1/qa/metrics?project_id=&window_days=` returns counters
     (by_status/responder/kind/outcome), human/AI answer-latency
-    percentiles (p50/p95), and accept/escalation/expiration rates.
-    Integration test `qa_metrics_aggregates_velocity_and_outcomes`.
-    AI-confidence distribution deferred — confidence isn't persisted
-    on the QA row yet (consumed transiently by `accept_check`); add
-    `metadata.ai_confidence` to extend. UI dashboard not yet built.
+    percentiles (p50/p95), accept/escalation/expiration rates, **and**
+    AI confidence distribution (count/avg/p50/p95 + 5-bucket
+    histogram over [0.0, 1.0]). Confidence persistence: worker stamps
+    `metadata.ai_confidence` via `POST /v1/qa/{id}/ai-confidence` on
+    every `auto_answer_qa` (accept OR escalate) so the distribution
+    is unbiased by accept-policy. Integration tests:
+    `qa_metrics_aggregates_velocity_and_outcomes` +
+    `qa_ai_confidence_stamp_and_metrics_distribution`. UI dashboard
+    not yet built.
 12. **Surprise billing risk.** ✅ Documented in `apps/orchestra/CLAUDE.md`
     under "QA Sentinels & `qa:` Block → Surprise billing". Covers re-run
     additive cost accounting, `second_pass` doubling, the stuck-detector
