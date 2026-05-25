@@ -62,14 +62,14 @@ export class QaApiService extends BaseApiService {
     if (filters?.project_id) params = params.set('project_id', filters.project_id);
     if (filters?.limit != null) params = params.set('limit', filters.limit);
     if (filters?.offset != null) params = params.set('offset', filters.offset);
-    return this.http.get<SpQaItem[]>(`${this.baseUrl}/v1/qa`, { params });
+    return this.http.get<SpQaItem[]>(`${this.baseUrl}/qa`, { params });
   }
 
   get(id: string): Observable<SpQaItem> {
-    return this.http.get<SpQaItem>(`${this.baseUrl}/v1/qa/${id}`);
+    return this.http.get<SpQaItem>(`${this.baseUrl}/qa/${id}`);
   }
 
   answer(id: string, req: AnswerQaRequest): Observable<SpQaItem> {
-    return this.http.post<SpQaItem>(`${this.baseUrl}/v1/qa/${id}/answer`, req);
+    return this.http.post<SpQaItem>(`${this.baseUrl}/qa/${id}/answer`, req);
   }
 }

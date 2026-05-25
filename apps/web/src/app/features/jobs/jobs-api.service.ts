@@ -50,7 +50,7 @@ export class JobsApiService {
 
   listQa(taskId: string): Observable<SpQaItem[]> {
     const params = new HttpParams().set('task_id', taskId);
-    return this.http.get<SpQaItem[]>(`${this.baseUrl}/v1/qa`, { params });
+    return this.http.get<SpQaItem[]>(`${this.baseUrl}/qa`, { params });
   }
 
   listReports(projectId: string, taskId: string): Observable<SpReport[]> {

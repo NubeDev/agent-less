@@ -213,10 +213,6 @@ function taskBranchName(taskId: string): string {
              class="rounded border border-border bg-bg-subtle px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover">
             Post-mortem (DAG + diffs)
           </a>
-          <a [routerLink]="['/advanced', t.id]"
-             class="rounded border border-border bg-bg-subtle px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover">
-            Advanced view
-          </a>
         </section>
 
         <!-- Tabs -->
