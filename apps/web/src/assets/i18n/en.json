@@ -21,7 +21,7 @@
     "reports": "Reports",
     "reference": "Reference",
     "stepTemplates": "Step Templates",
-    "work": "Work",
+    "work": "Steps",
     "pipelines": "Pipelines",
     "noAgents": "No agents yet",
     "noAgentsHint": "Create an agent to start automating tasks.",
