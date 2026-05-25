@@ -216,6 +216,44 @@ pub async fn resolve_pending_qa_for_cancelled_task(
     Ok(res.rows_affected())
 }
 
+/// Resolve every other pending QA on the same task as a side-effect
+/// of answering one. Used by the QA answer route: when the agent
+/// emitted N sentinels in a single step, answering any one transitions
+/// the task out of `ai_review`, which would otherwise strand the
+/// siblings as pending-but-unanswerable (422 on every subsequent
+/// answer attempt because the task is no longer in a review state).
+///
+/// Each sibling is stamped with `answer = '[batched with QA <primary>]'`
+/// and `metadata.batched_with = <primary>` so reviewers can trace the
+/// resolution back to the primary answer. Outcome stays `'unknown'`
+/// (SoW-4 telemetry shouldn't infer good/bad from a batch close).
+///
+/// Returns the count of rows affected. Excludes the primary QA itself.
+pub async fn resolve_sibling_pending_qa(
+    pool: &PgPool,
+    task_id: Uuid,
+    primary_qa_id: Uuid,
+) -> Result<u64, AppError> {
+    let marker = format!("[batched with QA {primary_qa_id}]");
+    let res = sqlx::query(
+        "UPDATE diraigent.task_qa_item
+         SET status      = 'resolved',
+             answer      = COALESCE(answer, $3),
+             answered_at = COALESCE(answered_at, now()),
+             resolved_at = COALESCE(resolved_at, now()),
+             metadata    = metadata || jsonb_build_object('batched_with', $2::text)
+         WHERE task_id = $1
+           AND id != $2
+           AND status = 'pending'",
+    )
+    .bind(task_id)
+    .bind(primary_qa_id)
+    .bind(&marker)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// been `done` for at least `min_age_days` and still has
 /// `outcome = 'unknown'`, set the outcome to `resolved_clean`.
 ///

@@ -166,10 +166,20 @@ async fn answer(
             task.state
         )));
     }
-    if !can_transition(&task.state, &req.target_step) {
+    // Translate a bare step name (e.g. "plan") into the wait:<step>
+    // form the orchestra poller actually picks up. Without this the
+    // task lands in a bare step state with no claimer and wedges.
+    // Already-prefixed wait:<step> targets pass through unchanged so
+    // older clients that send the explicit form still work.
+    let resume_state = if req.target_step.starts_with("wait:") {
+        req.target_step.clone()
+    } else {
+        format!("wait:{}", req.target_step)
+    };
+    if !can_transition(&task.state, &resume_state) {
         return Err(AppError::UnprocessableEntity(format!(
             "Cannot transition task from '{}' to '{}'",
-            task.state, req.target_step
+            task.state, resume_state
         )));
     }
 
@@ -183,7 +193,7 @@ async fn answer(
     let old_state = task.state.clone();
     let transitioned = state
         .db
-        .transition_task(item.task_id, &req.target_step, None)
+        .transition_task(item.task_id, &resume_state, None)
         .await?;
 
     // 3. Mark the QA item resolved. (Best-effort; the transition is the
@@ -191,6 +201,33 @@ async fn answer(
     let resolved = qa_items::set_qa_item_status(&state.pool, id, "resolved")
         .await
         .unwrap_or(answered);
+
+    // 3b. Batch-resolve any sibling pending QAs on the same task.
+    //     When the worker posts N sentinels from one step, answering
+    //     one transitions the task out of ai_review and would strand
+    //     the rest as pending-but-unanswerable (every subsequent answer
+    //     attempt 422s because the task is no longer in a review state).
+    //     Best-effort: a failed batch close must not roll back the
+    //     primary answer or the transition the caller is observing.
+    match crate::repository::resolve_sibling_pending_qa(&state.pool, item.task_id, id).await {
+        Ok(n) if n > 0 => {
+            tracing::info!(
+                task_id = %item.task_id,
+                primary_qa = %id,
+                siblings = n,
+                "batch-resolved sibling pending QA items"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                task_id = %item.task_id,
+                primary_qa = %id,
+                error = %e,
+                "failed to batch-resolve sibling pending QA items"
+            );
+        }
+    }
 
     // 4. Bridge: write a task_update of kind `note` documenting the
     //    resolution so the existing thread surface shows it.

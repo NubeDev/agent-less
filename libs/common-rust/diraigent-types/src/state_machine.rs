@@ -40,11 +40,17 @@ pub fn wait_target(s: &str) -> Option<&str> {
 ///   done       → backlog, human_review
 ///   cancelled  → backlog
 ///   human_review → done, ready, backlog, cancelled, ai_review (escalate),
-///                  or any named step (resume after answer)
-///   ai_review    → cancelled, human_review (escalate), or any named step
-///                  (resume after answer). Cannot go directly to a lifecycle
-///                  state like `done` — must resume a step or escalate first.
+///                  any named step, or wait:<step> (resume after answer)
+///   ai_review    → cancelled, human_review (escalate), any named step,
+///                  or wait:<step> (resume after answer). Cannot go to
+///                  done/ready/backlog directly — must resume or escalate.
 /// ```
+///
+/// `wait:<step>` is permitted as a review-state target because the orchestra
+/// poller only picks up tasks in `ready` or `wait:*`. Setting a bare step
+/// name on resume leaves the task wedged with no claimer, so the API
+/// translates the human-supplied step into `wait:<step>` before calling
+/// `transition_task`. See `routes/qa.rs::answer`.
 pub fn can_transition(current: &str, target: &str) -> bool {
     match current {
         "backlog" => matches!(target, "ready" | "cancelled"),
@@ -65,19 +71,22 @@ pub fn can_transition(current: &str, target: &str) -> bool {
         "human_review" => {
             // Existing post-done review surface: approve (→done), rework
             // (→ready), reopen (→backlog), cancel, escalate (→ai_review),
-            // or resume any named step with the answer.
+            // or resume any named step with the answer (bare or via wait:).
             matches!(
                 target,
                 "done" | "ready" | "backlog" | "cancelled" | "ai_review"
-            ) || (!is_lifecycle_state(target) && !is_review_state(target))
+            ) || is_wait_state(target)
+                || (!is_lifecycle_state(target) && !is_review_state(target))
         }
         "ai_review" => {
-            // AI review resolves via resume-to-step, escalate to human, or
-            // cancel. Direct transitions to lifecycle states (done/ready/
-            // backlog/wait:*) are forbidden — the answer must drive the next
-            // step or escalation explicitly.
+            // AI review resolves via resume-to-step (bare or wait:<step>),
+            // escalate to human, or cancel. Direct transitions to done/
+            // ready/backlog are still forbidden — the answer must drive the
+            // next step or escalation explicitly. wait:<step> is the path
+            // the orchestra poller actually picks up.
             target == "cancelled"
                 || target == "human_review"
+                || is_wait_state(target)
                 || (!is_lifecycle_state(target) && !is_review_state(target))
         }
         _ => {
@@ -181,19 +190,22 @@ mod tests {
 
     #[test]
     fn ai_review_transitions() {
-        // Resume any named step.
+        // Resume any named step (bare or via wait:<step>).
         assert!(can_transition("ai_review", "implement"));
         assert!(can_transition("ai_review", "review"));
+        // wait:<step> is the form the orchestra poller picks up; the QA
+        // answer route translates a human-supplied bare step to wait:.
+        assert!(can_transition("ai_review", "wait:plan"));
+        assert!(can_transition("ai_review", "wait:implement"));
         // Escalate to human.
         assert!(can_transition("ai_review", "human_review"));
         // Cancel.
         assert!(can_transition("ai_review", "cancelled"));
-        // Forbidden: direct to lifecycle states. Review only resolves via
-        // resume-to-step or escalation.
+        // Forbidden: direct to terminal/queue states. Review only resolves
+        // via resume-to-step or escalation.
         assert!(!can_transition("ai_review", "done"));
         assert!(!can_transition("ai_review", "ready"));
         assert!(!can_transition("ai_review", "backlog"));
-        assert!(!can_transition("ai_review", "wait:review"));
     }
 
     #[test]
@@ -203,11 +215,11 @@ mod tests {
         assert!(can_transition("human_review", "ready"));
         assert!(can_transition("human_review", "backlog"));
         assert!(can_transition("human_review", "cancelled"));
-        // Resume any named step (e.g. after answering a QA item).
+        // Resume any named step (e.g. after answering a QA item) — bare or
+        // via wait:<step> for orchestra pickup.
         assert!(can_transition("human_review", "implement"));
+        assert!(can_transition("human_review", "wait:review"));
         // Escalate to/from ai_review.
         assert!(can_transition("human_review", "ai_review"));
-        // Forbidden: cannot bypass via wait state.
-        assert!(!can_transition("human_review", "wait:review"));
     }
 }
