@@ -26,6 +26,10 @@ import {
   StepFileGroup,
 } from '../jobs/jobs-api.service';
 import { TaskStreamService } from '../jobs/task-stream.service';
+import {
+  DiraigentApiService,
+  DgProject,
+} from '../../core/services/diraigent-api.service';
 
 /**
  * SoW-10 — single-job console. The per-task counterpart of /control:
@@ -49,12 +53,22 @@ function taskBranchName(taskId: string): string {
     <div class="mx-auto max-w-5xl px-3 py-4">
       <!-- Header -->
       <div class="mb-3 flex items-center justify-between gap-2 text-xs">
-        <a routerLink="/control" class="text-text-secondary hover:text-text-primary">
-          ← Mission control
-        </a>
+        <nav class="flex min-w-0 flex-wrap items-center gap-1 text-text-secondary" aria-label="Breadcrumb">
+          <a routerLink="/control" class="hover:text-text-primary">Projects</a>
+          @if (project(); as p) {
+            <span aria-hidden="true">▸</span>
+            <a routerLink="/control" class="hover:text-text-primary">{{ p.name }}</a>
+          }
+          @if (task(); as t) {
+            <span aria-hidden="true">▸</span>
+            <span class="text-text-primary">Job #{{ t.number }}</span>
+            <span aria-hidden="true">▸</span>
+            <span class="truncate text-text-primary">{{ t.title }}</span>
+          }
+        </nav>
         @if (task(); as t) {
           <a [routerLink]="['/jobs', t.id, 'post-mortem']"
-             class="text-text-secondary hover:text-text-primary underline decoration-dotted">
+             class="shrink-0 text-text-secondary hover:text-text-primary underline decoration-dotted">
             Post-mortem view →
           </a>
         }
@@ -359,8 +373,10 @@ export class JobConsolePage implements OnInit, OnDestroy {
   private qaApi = inject(QaApiService);
   private jobsApi = inject(JobsApiService);
   private stream = inject(TaskStreamService);
+  private dgApi = inject(DiraigentApiService);
 
   readonly task = signal<SpTask | null>(null);
+  readonly project = signal<DgProject | null>(null);
   readonly qas = signal<SpQaItem[]>([]);
   readonly logs = signal<TaskLogSummary[]>([]);
   readonly reports = signal<SpReport[]>([]);
@@ -561,6 +577,12 @@ export class JobConsolePage implements OnInit, OnDestroy {
       this.loadError.set(null);
 
       const pid = task.project_id;
+      if (this.project()?.id !== pid) {
+        try {
+          const proj = await firstValueFrom(this.dgApi.getProject(pid));
+          this.project.set(proj);
+        } catch { /* breadcrumb degrades gracefully */ }
+      }
       const [qa, logs, reports, files] = await Promise.all([
         firstValueFrom(this.jobsApi.listQa(this.taskId)),
         firstValueFrom(this.jobsApi.listLogs(pid, this.taskId)).catch(() => [] as TaskLogSummary[]),
