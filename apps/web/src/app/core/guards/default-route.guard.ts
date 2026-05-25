@@ -7,7 +7,7 @@ import { AuthService } from '../services/auth.service';
 
 /** Persistent key (localStorage) recording the user's preferred mode. */
 const MODE_KEY = 'diraigent.uiMode';
-type UiMode = 'quick' | 'advanced';
+type UiMode = 'quick' | 'advanced' | 'control';
 
 /**
  * UI-2 — Default landing route. Authenticated users hitting `/` are
@@ -38,17 +38,17 @@ export class DefaultRouteGuard implements CanActivate {
 
   private decide(): boolean | UrlTree {
     if (!this.auth.isLoggedIn()) return true;
-    const pref = (localStorage.getItem(MODE_KEY) as UiMode | null) ?? 'quick';
-    return pref === 'advanced'
-      ? this.router.parseUrl('/dashboard')
-      : this.router.parseUrl('/quick');
+    const pref = (localStorage.getItem(MODE_KEY) as UiMode | null) ?? 'control';
+    if (pref === 'advanced') return this.router.parseUrl('/dashboard');
+    if (pref === 'quick') return this.router.parseUrl('/quick');
+    return this.router.parseUrl('/control');
   }
 }
 
 /** Read or write the persisted UI-mode preference. Used by toggle buttons. */
 export function getUiMode(): UiMode {
-  if (typeof localStorage === 'undefined') return 'quick';
-  return (localStorage.getItem(MODE_KEY) as UiMode | null) ?? 'quick';
+  if (typeof localStorage === 'undefined') return 'control';
+  return (localStorage.getItem(MODE_KEY) as UiMode | null) ?? 'control';
 }
 
 export function setUiMode(mode: UiMode): void {

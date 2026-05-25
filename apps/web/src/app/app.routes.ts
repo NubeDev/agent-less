@@ -178,7 +178,17 @@ export const routes: Routes = [
     loadComponent: () => import('./features/audit/audit').then(m => m.AuditPage),
   },
   {
+    path: 'control',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/control/control').then(m => m.ControlPage),
+  },
+  {
     path: 'jobs/:taskId',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./features/jobs/job-theatre').then(m => m.JobTheatrePage),
+  },
+  {
+    path: 'jobs/:taskId/post-mortem',
     canActivate: [AuthGuard],
     loadComponent: () => import('./features/jobs/job-theatre').then(m => m.JobTheatrePage),
   },

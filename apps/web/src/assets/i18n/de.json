@@ -24,7 +24,8 @@
     "pipelines": "Pipelines",
     "noAgents": "Noch keine Agenten",
     "noAgentsHint": "Erstelle einen Agenten, um Aufgaben zu automatisieren.",
-    "createAgent": "Agent erstellen"
+    "createAgent": "Agent erstellen",
+    "control": "Control"
   },
   "quick": {
     "newTitle": "Neuer Auftrag",

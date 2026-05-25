@@ -73,6 +73,7 @@ export class SidebarComponent {
   );
 
   readonly navEntries: NavEntry[] = [
+    { path: '/control', labelKey: 'nav.control', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
     { path: '/quick', labelKey: 'nav.quick', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
     { path: '/advanced/new', labelKey: 'nav.advancedNew', icon: 'M12 4v16m8-8H4' },
     { path: '/work', labelKey: 'nav.work', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
