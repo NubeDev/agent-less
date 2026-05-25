@@ -159,27 +159,25 @@ function taskBranchName(taskId: string): string {
           <ul class="space-y-2" data-testid="control-needs-you">
             @for (card of needsYou(); track card.task.id) {
               <li class="rounded-lg border border-ctp-yellow/30 bg-ctp-yellow/5 p-3">
-                <div class="mb-2 flex items-start justify-between gap-3">
-                  <div class="min-w-0">
+                <div class="mb-2 min-w-0">
+                  <div class="text-xs text-text-secondary">
+                    <span class="text-text-primary">{{ selectedProjectName() }}</span>
+                    <span> · </span>
                     <a [routerLink]="['/jobs', card.task.id]"
-                       class="font-medium text-text-primary hover:underline">
-                      #{{ card.task.number }} {{ card.task.title }}
-                    </a>
-                    <div class="mt-0.5 text-xs text-text-secondary">
-                      step <span class="font-mono">{{ card.task.state }}</span>
-                      · \${{ card.task.cost_usd | number:'1.4-4' }}
-                      · {{ card.pendingQas.length }} question{{ card.pendingQas.length === 1 ? '' : 's' }}
-                    </div>
+                       class="hover:underline">Job #{{ card.task.number }}</a>
+                    <span> · </span>
+                    <a [routerLink]="['/jobs', card.task.id]"
+                       class="font-medium text-text-primary hover:underline">{{ card.task.title }}</a>
                   </div>
-                  <button type="button" (click)="toggleExpand(card.task.id)"
-                          class="shrink-0 rounded border border-border bg-bg-subtle px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-hover">
-                    {{ isExpanded(card.task.id) ? 'collapse' : 'answer' }}
-                  </button>
+                  <div class="mt-0.5 text-xs text-text-secondary">
+                    step <span class="font-mono">{{ card.task.state }}</span>
+                    · \${{ card.task.cost_usd | number:'1.4-4' }}
+                    · {{ card.pendingQas.length }} question{{ card.pendingQas.length === 1 ? '' : 's' }}
+                  </div>
                 </div>
 
-                @if (isExpanded(card.task.id)) {
-                  <div class="space-y-3 border-t border-ctp-yellow/20 pt-3">
-                    @for (qa of card.pendingQas; track qa.id) {
+                <div class="space-y-3 border-t border-ctp-yellow/20 pt-3">
+                  @for (qa of card.pendingQas; track qa.id) {
                       <div class="rounded border border-border bg-bg-base/40 p-3">
                         <div class="mb-2 flex items-center gap-2 text-[10px] uppercase tracking-wider text-text-secondary">
                           <span class="font-mono">{{ qa.step_name }}</span>
@@ -229,8 +227,7 @@ function taskBranchName(taskId: string): string {
                         }
                       </div>
                     }
-                  </div>
-                }
+                </div>
               </li>
             }
           </ul>
@@ -384,7 +381,6 @@ export class ControlPage implements OnInit, OnDestroy {
   readonly pendingQaByTask = signal<Map<string, SpQaItem[]>>(new Map());
   readonly loadError = signal<string | null>(null);
   readonly mode = signal<ControlMode>(readMode());
-  readonly expanded = signal<Set<string>>(new Set());
   readonly answering = signal<string | null>(null);
   readonly answerError = signal<Record<string, string>>({});
   readonly copiedTaskId = signal<string | null>(null);
@@ -403,6 +399,11 @@ export class ControlPage implements OnInit, OnDestroy {
       task: t,
       pendingQas: byTask.get(t.id) ?? [],
     }));
+  });
+
+  readonly selectedProjectName = computed(() => {
+    const pid = this.selectedProjectId();
+    return this.projects().find(p => p.id === pid)?.name ?? '';
   });
 
   readonly needsYou = computed(() =>
@@ -503,17 +504,6 @@ export class ControlPage implements OnInit, OnDestroy {
     const next: ControlMode = this.mode() === 'autonomous' ? 'gated' : 'autonomous';
     this.mode.set(next);
     writeMode(next);
-  }
-
-  toggleExpand(taskId: string): void {
-    const next = new Set(this.expanded());
-    if (next.has(taskId)) next.delete(taskId);
-    else next.add(taskId);
-    this.expanded.set(next);
-  }
-
-  isExpanded(taskId: string): boolean {
-    return this.expanded().has(taskId);
   }
 
   quickAnswer(qa: SpQaItem, value: string): void {
