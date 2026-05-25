@@ -40,16 +40,17 @@ post() {
 
 # --- 1. Project ----------------------------------------------------------
 SLUG="diraigent-self-$(date +%Y%m%d-%H%M%S)"
-# NOTE: repo_path must be relative to PROJECTS_PATH and may not begin
-# with '/'. In this dev box PROJECTS_PATH is unset, so we omit the
-# path entirely; orchestra integration can be wired up later. The
-# project exists primarily as a container for the goal + tasks.
+# Project must reference a relative repo path under PROJECTS_PATH.
+# The orchestra is launched with PROJECTS_PATH=/home/user/code/rust, so
+# git_root='diraigent' resolves to /home/user/code/rust/diraigent (this repo).
+GIT_ROOT_REL="${GIT_ROOT_REL:-diraigent}"
 PROJECT_PAYLOAD=$(jq -n \
   --arg name "Diraigent (self)" \
   --arg slug "${SLUG}" \
   --arg desc "Use diraigent to build diraigent's Job Theatre UI. Repo: ${REPO_PATH}" \
+  --arg root "${GIT_ROOT_REL}" \
   '{name:$name, slug:$slug, description:$desc,
-    default_branch:"main", git_mode:"none",
+    default_branch:"main", git_mode:"standalone", git_root:$root,
     package_slug:"software-dev"}')
 
 echo "==> creating project (slug=${SLUG}, repo=${REPO_PATH})"
@@ -90,11 +91,12 @@ PARENT_CTX=$(jq -n --arg brief "${EPIC_BRIEF}" \
   --argjson qa "${YOLO_QA}" \
   '{epic_brief:$brief, qa_override:$qa}')
 
+# Epic is a container, not work. Omit playbook_name so it stays in
+# 'backlog' state and the orchestra won't claim it.
 PARENT_PAYLOAD=$(jq -n \
   --arg title "EPIC: Job Theatre — one page per job, full lifecycle" \
-  --arg pb "${PLAYBOOK}" \
   --argjson ctx "${PARENT_CTX}" \
-  '{title:$title, kind:"feature", playbook_name:$pb, context:$ctx}')
+  '{title:$title, kind:"feature", context:$ctx}')
 
 echo "==> creating parent (epic) task"
 PARENT=$(post "/v1/${PROJECT_ID}/tasks" "${PARENT_PAYLOAD}")
