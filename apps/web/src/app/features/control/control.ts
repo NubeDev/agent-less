@@ -250,7 +250,10 @@ function taskBranchName(taskId: string): string {
               <li class="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg-subtle px-3 py-2 hover:bg-surface-hover">
                 <a [routerLink]="['/jobs', card.task.id]" class="flex min-w-0 flex-1 items-center gap-2">
                   <span class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ctp-blue"></span>
-                  <span class="truncate text-text-primary">#{{ card.task.number }} {{ card.task.title }}</span>
+                  <span class="truncate text-text-primary">
+                    <span class="text-text-secondary">{{ selectedProjectName() }} · #{{ card.task.number }} ·</span>
+                    {{ card.task.title }}
+                  </span>
                 </a>
                 <span class="shrink-0 font-mono text-xs text-text-secondary">
                   {{ card.task.state }} · \${{ card.task.cost_usd | number:'1.4-4' }} · {{ card.task.updated_at | date:'shortTime' }}
@@ -279,7 +282,8 @@ function taskBranchName(taskId: string): string {
                   <div class="min-w-0">
                     <a [routerLink]="['/jobs', card.task.id]"
                        class="font-medium text-text-primary hover:underline">
-                      #{{ card.task.number }} {{ card.task.title }}
+                      <span class="text-text-secondary">{{ selectedProjectName() }} · #{{ card.task.number }} ·</span>
+                      {{ card.task.title }}
                     </a>
                     <div class="mt-0.5 font-mono text-xs text-text-secondary">
                       branch <span class="text-ctp-teal">{{ branchOf(card.task) }}</span>
@@ -311,7 +315,8 @@ function taskBranchName(taskId: string): string {
             @for (card of backlog(); track card.task.id) {
               <li class="flex items-center justify-between gap-3 py-1.5">
                 <a [routerLink]="['/jobs', card.task.id]" class="truncate text-sm text-text-primary hover:underline">
-                  #{{ card.task.number }} {{ card.task.title }}
+                  <span class="text-text-secondary">{{ selectedProjectName() }} · #{{ card.task.number }} ·</span>
+                  {{ card.task.title }}
                 </a>
                 <span class="shrink-0 font-mono text-xs text-text-secondary">{{ card.task.created_at | date:'short' }}</span>
               </li>
@@ -333,7 +338,10 @@ function taskBranchName(taskId: string): string {
               <li class="flex items-center justify-between gap-3 py-1.5">
                 <a [routerLink]="['/jobs', card.task.id]" class="flex min-w-0 flex-1 items-center gap-2 hover:underline">
                   <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-ctp-green"></span>
-                  <span class="truncate text-sm text-text-primary">#{{ card.task.number }} {{ card.task.title }}</span>
+                  <span class="truncate text-sm text-text-primary">
+                    <span class="text-text-secondary">{{ selectedProjectName() }} · #{{ card.task.number }} ·</span>
+                    {{ card.task.title }}
+                  </span>
                 </a>
                 <span class="shrink-0 font-mono text-xs text-text-secondary">
                   \${{ card.task.cost_usd | number:'1.4-4' }} · {{ card.task.completed_at | date:'shortTime' }}
@@ -356,7 +364,8 @@ function taskBranchName(taskId: string): string {
             @for (card of parkedFailed(); track card.task.id) {
               <li class="flex items-center justify-between gap-3 py-1.5">
                 <a [routerLink]="['/jobs', card.task.id]" class="truncate text-sm text-text-primary hover:underline">
-                  #{{ card.task.number }} {{ card.task.title }}
+                  <span class="text-text-secondary">{{ selectedProjectName() }} · #{{ card.task.number }} ·</span>
+                  {{ card.task.title }}
                 </a>
                 <span class="shrink-0 font-mono text-xs text-ctp-red">{{ card.task.state }}</span>
               </li>
