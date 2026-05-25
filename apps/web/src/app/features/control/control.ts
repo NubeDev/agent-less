@@ -147,6 +147,8 @@ function taskBranchName(taskId: string): string {
       <section class="mb-6">
         <h2 class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ctp-yellow">
           ⚠ Needs you
+          <span class="cursor-help text-text-secondary opacity-70"
+                title="Jobs with at least one QA item in status=pending. Empties as soon as you answer or the AI auto-resolves them.">(?)</span>
           @if (needsYou().length > 0) {
             <span class="rounded-full bg-ctp-yellow/20 px-1.5 py-0.5 font-mono text-[10px] text-ctp-yellow">
               {{ needsYou().length }}
@@ -236,8 +238,10 @@ function taskBranchName(taskId: string): string {
 
       <!-- ─── In flight ─── -->
       <section class="mb-6">
-        <h2 class="mb-2 text-xs font-semibold uppercase tracking-wider text-ctp-blue">
+        <h2 class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ctp-blue">
           🟢 In flight
+          <span class="cursor-help text-text-secondary opacity-70"
+                title="Jobs currently running with no pending QAs. state ≠ done | cancelled | backlog | failed | parked.">(?)</span>
           @if (inFlight().length > 0) {
             <span class="ml-1 font-normal normal-case text-text-secondary">— autonomous, no input expected</span>
           }
@@ -266,8 +270,10 @@ function taskBranchName(taskId: string): string {
 
       <!-- ─── Ready to ship ─── -->
       <section class="mb-6">
-        <h2 class="mb-2 text-xs font-semibold uppercase tracking-wider text-ctp-teal">
+        <h2 class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ctp-teal">
           🚀 Ready to ship
+          <span class="cursor-help text-text-secondary opacity-70"
+                title="state = done with a completed_at in the last 24h. Branch is merged locally; you still need to git push.">(?)</span>
           @if (readyToShip().length > 0) {
             <span class="ml-1 font-normal normal-case text-text-secondary">— merged locally, not yet pushed</span>
           }
@@ -307,6 +313,8 @@ function taskBranchName(taskId: string): string {
       <details class="mb-3 rounded-lg border border-border bg-bg-subtle" [open]="false">
         <summary class="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
           ▶ Backlog ({{ backlog().length }})
+          <span class="ml-1 cursor-help opacity-70"
+                title="state = backlog. Job has been created but not yet picked up by a worker; sorted oldest first.">(?)</span>
         </summary>
         @if (backlog().length === 0) {
           <p class="px-3 pb-3 text-sm text-text-secondary">Empty.</p>
@@ -329,6 +337,8 @@ function taskBranchName(taskId: string): string {
       <details class="mb-3 rounded-lg border border-border bg-bg-subtle" [open]="false">
         <summary class="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
           ▶ Done today ({{ doneToday().length }})
+          <span class="ml-1 cursor-help opacity-70"
+                title="state ∈ {done, cancelled} with completed_at (or updated_at) in the last 24h.">(?)</span>
         </summary>
         @if (doneToday().length === 0) {
           <p class="px-3 pb-3 text-sm text-text-secondary">Nothing finished in the last 24h.</p>
@@ -356,6 +366,8 @@ function taskBranchName(taskId: string): string {
       <details class="rounded-lg border border-ctp-red/20 bg-ctp-red/5" [open]="parkedFailed().length > 0">
         <summary class="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wider text-ctp-red">
           ▶ Parked / failed ({{ parkedFailed().length }})
+          <span class="ml-1 cursor-help opacity-70"
+                title="state ∈ {failed, parked}. Worker hit an unrecoverable error or a human paused the job; needs investigation.">(?)</span>
         </summary>
         @if (parkedFailed().length === 0) {
           <p class="px-3 pb-3 text-sm text-text-secondary">None.</p>
