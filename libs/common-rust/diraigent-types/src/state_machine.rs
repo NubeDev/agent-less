@@ -37,7 +37,7 @@ pub fn wait_target(s: &str) -> Option<&str> {
 ///   ready      → <step_name>, backlog, cancelled
 ///   <step>     → done, ready, cancelled, wait:<next>
 ///   wait:<s>   → <s> (via claim), cancelled
-///   done       → backlog, human_review
+///   done       → backlog, human_review, ai_review
 ///   cancelled  → backlog
 ///   human_review → done, ready, backlog, cancelled, ai_review (escalate),
 ///                  any named step, or wait:<step> (resume after answer)
@@ -59,8 +59,12 @@ pub fn can_transition(current: &str, target: &str) -> bool {
             !is_lifecycle_state(target) || matches!(target, "backlog" | "cancelled")
         }
         "done" => {
-            // done is terminal — reopen to backlog, or move to human_review
-            target == "backlog" || target == "human_review"
+            // done is terminal — reopen to backlog, move to human_review,
+            // or roll back to ai_review when the worker detects unanswered
+            // QA sentinels emitted after the agent ran `transition done`
+            // (the orchestra's QA enforcement boundary overrides the
+            // agent's premature completion claim).
+            target == "backlog" || target == "human_review" || target == "ai_review"
         }
         "cancelled" => target == "backlog",
         _ if is_wait_state(current) => {
@@ -163,6 +167,7 @@ mod tests {
         // done
         assert!(can_transition("done", "backlog"));
         assert!(can_transition("done", "human_review"));
+        assert!(can_transition("done", "ai_review"));
         assert!(!can_transition("done", "ready"));
 
         // cancelled
