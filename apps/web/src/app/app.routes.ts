@@ -185,7 +185,7 @@ export const routes: Routes = [
   {
     path: 'jobs/:taskId',
     canActivate: [AuthGuard],
-    loadComponent: () => import('./features/jobs/job-theatre').then(m => m.JobTheatrePage),
+    loadComponent: () => import('./features/jobs/job-console').then(m => m.JobConsolePage),
   },
   {
     path: 'jobs/:taskId/post-mortem',
